@@ -1,0 +1,64 @@
+# Shipped category rules (DESIGN §10.1). Embedded via include_str!.
+# User packs in <config>/rules/*.toml merge by rule id (same id replaces,
+# new id appends). Editing this file changes rule_pack_version, which
+# invalidates every repo's cached classification (DESIGN §6.5).
+#
+# Signal kinds: any_dependency, all_dependencies, any_file (glob),
+# any_language (optional min_percentage), predicate (closed built-in set).
+# The engine that consumes these lands in M3-3.
+
+[settings]
+floor = 3
+fullstack_threshold = 4
+margin = 2
+
+[[rule]]
+id = "react-frontend"
+weights = { Frontend = 5 }
+any_dependency = ["react", "vue", "svelte", "@angular/core", "solid-js", "preact"]
+
+[[rule]]
+id = "frontend-build-tooling"
+weights = { Frontend = 2 }
+any_dependency = ["vite", "webpack", "@vitejs/plugin-react", "next", "nuxt"]
+
+[[rule]]
+id = "server-framework"
+weights = { Backend = 5 }
+any_dependency = [
+    "express", "fastify", "koa", "@nestjs/core",
+    "axum", "actix-web", "rocket",
+    "django", "flask", "fastapi",
+    "github.com/gin-gonic/gin", "github.com/labstack/echo",
+]
+
+[[rule]]
+id = "mobile"
+weights = { Mobile = 6 }
+any_dependency = ["react-native", "expo", "@ionic/core"]
+any_file = ["*.xcodeproj/project.pbxproj", "android/app/build.gradle", "pubspec.yaml"]
+
+[[rule]]
+id = "iac"
+weights = { DevOps = 6 }
+any_file = ["*.tf", "Chart.yaml", "kustomization.yaml", "ansible.cfg", "Dockerfile", "docker-compose.yml"]
+
+[[rule]]
+id = "data-ml"
+weights = { DataMl = 6 }
+any_dependency = ["numpy", "pandas", "torch", "tensorflow", "scikit-learn", "polars", "jupyterlab"]
+
+[[rule]]
+id = "cli"
+weights = { Cli = 4 }
+any_dependency = ["clap", "commander", "yargs", "typer", "github.com/spf13/cobra"]
+
+[[rule]]
+id = "publishable-library"
+weights = { Library = 4 }
+predicate = "has_manifest_without_entrypoint"
+
+[[rule]]
+id = "docs"
+weights = { Docs = 5 }
+any_file = ["mkdocs.yml", "docusaurus.config.js", "book.toml", "_config.yml"]

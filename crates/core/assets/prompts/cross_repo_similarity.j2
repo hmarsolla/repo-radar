@@ -1,0 +1,15 @@
+{# T1 — cross-repo similarity (N repos). Built-in template; runs through the
+   same minijinja path as user templates (DESIGN §11.1). Fleshed out in M4-2. #}
+You are reviewing {{ repos | length }} repositories for overlap and
+consolidation opportunities. Advisory data was last refreshed:
+{{ advisory_freshness }}.
+
+{% for repo in repos %}
+## {{ repo.name }} — {{ repo.category }}
+Languages: {% for l in repo.languages %}{{ l.language }} ({{ l.percentage }}%){% if not loop.last %}, {% endif %}{% endfor %}
+Technologies: {% for t in repo.technologies %}{{ t.tech }}{% if not loop.last %}, {% endif %}{% endfor %}
+Direct dependencies: {% for d in repo.direct_dependencies %}{{ d.name }}@{{ d.version }}{% if not loop.last %}, {% endif %}{% endfor %}
+{% endfor %}
+
+Identify shared dependencies, duplicated functionality, and repos that could
+merge or share a library. Be concrete about which repos and which modules.

@@ -1,0 +1,24 @@
+[workspace]
+members = ["crates/core", "src-tauri"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+# Shared across core and src-tauri
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = { version = "0.4", features = ["serde", "clock"], default-features = false }
+thiserror = "2"
+tracing = "0.1"
+specta = { version = "=2.0.0-rc.25", features = ["derive", "chrono"] }
+
+[profile.dev]
+# libgit2 / sqlite are unbearably slow to build+run fully unoptimized
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3

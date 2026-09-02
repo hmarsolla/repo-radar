@@ -1,0 +1,27 @@
+[package]
+name = "repo-radar-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Analysis core for repo-radar: discovery, parsing, OSV ingestion, matching, scoring. No Tauri dependency."
+
+[lib]
+name = "repo_radar_core"
+path = "src/lib.rs"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+specta.workspace = true
+
+rusqlite = { version = "0.40", features = ["bundled", "chrono", "serde_json"] }
+r2d2 = "0.8"
+r2d2_sqlite = "0.35"
+blake3 = "1"
+
+[dev-dependencies]
+tempfile = "3"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

@@ -1,0 +1,47 @@
+[package]
+name = "repo-radar"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "repo-radar — local-first repository intelligence and dependency security"
+authors = ["repo-radar contributors"]
+
+[lib]
+# The `_lib` suffix keeps the lib name distinct from the bin on Windows
+# (rust-lang/cargo#8519). `staticlib` is only needed for a mobile build,
+# which is out of scope for v1 (PRD N-goals); omitting it keeps `cargo test`
+# from producing an unusable test binary on Windows.
+name = "repo_radar_lib"
+crate-type = ["cdylib", "rlib"]
+
+# Regenerates src/bindings.ts. Run in CI, then `git diff --exit-code`
+# (M0-8). Kept out of the library so `cargo test` never links a Tauri
+# runtime into a test harness.
+[[bin]]
+name = "gen-bindings"
+path = "src/bin/gen_bindings.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+repo-radar-core = { path = "../crates/core" }
+
+tauri = { version = "2", features = ["specta"] }
+tauri-plugin-opener = "2"
+tauri-plugin-store = "2"
+tauri-plugin-dialog = "2"
+
+specta.workspace = true
+specta-typescript = "0.0.12"
+tauri-specta = { version = "=2.0.0-rc.25", features = ["derive", "typescript"] }
+
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+thiserror.workspace = true
+tokio = { version = "1", features = ["sync", "rt", "time"] }
+
+tracing.workspace = true
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-appender = "0.2"

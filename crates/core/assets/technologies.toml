@@ -1,0 +1,101 @@
+# Shipped technology-detection rules (DESIGN §10.1). Embedded via include_str!.
+# A detection records its evidence; a marker-file-only hit renders with less
+# prominence than a dependency-confirmed one (FR-2.4). The engine lands in M3-2.
+#
+# kind: framework | tooling | package-manager | runtime
+
+[[tech]]
+id = "react"
+name = "React"
+kind = "framework"
+any_dependency = ["react"]
+
+[[tech]]
+id = "nextjs"
+name = "Next.js"
+kind = "framework"
+any_dependency = ["next"]
+
+[[tech]]
+id = "vue"
+name = "Vue"
+kind = "framework"
+any_dependency = ["vue"]
+
+[[tech]]
+id = "django"
+name = "Django"
+kind = "framework"
+any_dependency = ["django"]
+
+[[tech]]
+id = "fastapi"
+name = "FastAPI"
+kind = "framework"
+any_dependency = ["fastapi"]
+
+[[tech]]
+id = "axum"
+name = "axum"
+kind = "framework"
+any_dependency = ["axum"]
+
+[[tech]]
+id = "tauri"
+name = "Tauri"
+kind = "framework"
+any_dependency = ["tauri", "@tauri-apps/api"]
+
+[[tech]]
+id = "typescript"
+name = "TypeScript"
+kind = "tooling"
+any_file = ["tsconfig.json"]
+
+[[tech]]
+id = "docker"
+name = "Docker"
+kind = "tooling"
+any_file = ["Dockerfile", "docker-compose.yml", "compose.yaml"]
+
+[[tech]]
+id = "npm"
+name = "npm"
+kind = "package-manager"
+any_file = ["package-lock.json"]
+
+[[tech]]
+id = "pnpm"
+name = "pnpm"
+kind = "package-manager"
+any_file = ["pnpm-lock.yaml"]
+
+[[tech]]
+id = "yarn"
+name = "Yarn"
+kind = "package-manager"
+any_file = ["yarn.lock"]
+
+[[tech]]
+id = "cargo"
+name = "Cargo"
+kind = "package-manager"
+any_file = ["Cargo.toml"]
+
+[[tech]]
+id = "go-modules"
+name = "Go Modules"
+kind = "package-manager"
+any_file = ["go.mod"]
+
+[[tech]]
+id = "poetry"
+name = "Poetry"
+kind = "package-manager"
+any_file = ["poetry.lock"]
+
+[[tech]]
+id = "uv"
+name = "uv"
+kind = "package-manager"
+any_file = ["uv.lock"]
