@@ -5,6 +5,9 @@ edition.workspace = true
 license.workspace = true
 description = "repo-radar — local-first repository intelligence and dependency security"
 authors = ["repo-radar contributors"]
+# `src-tauri` carries two binaries (the app + gen-bindings); tell cargo and
+# `tauri build` which one is the app.
+default-run = "repo-radar"
 
 [lib]
 # The `_lib` suffix keeps the lib name distinct from the bin on Windows
