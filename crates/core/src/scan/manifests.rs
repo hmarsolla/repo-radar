@@ -19,11 +19,19 @@ use crate::scan::discovery::DiscoveryConfig;
 /// risk the memory budget.
 const MAX_MANIFEST_BYTES: u64 = 8 * 1024 * 1024;
 
+/// Upper bound on the repo-relative file list handed to the rule engines
+/// (M3-2/M3-3). Marker-file globs only need presence, not completeness, and
+/// an unbounded list is a memory-budget risk on a pathological tree.
+const MAX_MARKER_FILES: usize = 20_000;
+
 #[derive(Debug, Default)]
 pub struct ManifestScan {
     pub dependencies: Vec<Dependency>,
     pub manifests: Vec<ParsedManifest>,
     pub monorepo: bool,
+    /// Repo-relative, `/`-separated paths for (up to [`MAX_MARKER_FILES`])
+    /// files in the repo — the input to rule-pack `any_file` signals.
+    pub files: Vec<String>,
     pub warnings: Vec<Warning>,
 }
 
@@ -38,6 +46,7 @@ pub fn scan_manifests(
     // dir (repo-relative, "" = root) -> { file name -> content }
     let mut by_dir: BTreeMap<String, BTreeMap<String, String>> = BTreeMap::new();
     let mut warnings: Vec<Warning> = Vec::new();
+    let mut marker_files: Vec<String> = Vec::new();
 
     let mut builder = WalkBuilder::new(repo_path);
     builder
@@ -67,6 +76,13 @@ pub fn scan_manifests(
         let Some(file_name) = entry.file_name().to_str() else {
             continue;
         };
+
+        if marker_files.len() < MAX_MARKER_FILES {
+            if let Ok(rel) = entry.path().strip_prefix(repo_path) {
+                marker_files.push(rel.to_string_lossy().replace('\\', "/"));
+            }
+        }
+
         if !registry.is_manifest_file(file_name) {
             continue;
         }
@@ -129,6 +145,8 @@ pub fn scan_manifests(
 
     out.warnings.extend(warnings);
     out.monorepo = roots_with_deps > 1;
+    marker_files.sort();
+    out.files = marker_files;
     out
 }
 

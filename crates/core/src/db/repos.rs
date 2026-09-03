@@ -264,6 +264,82 @@ fn scope_str(s: crate::model::Scope) -> &'static str {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Classification + technologies (M3-2, M3-3)
+// ---------------------------------------------------------------------------
+
+/// Wire string for a [`crate::model::Category`]. Matches the enum's serde
+/// name so `category_scores` JSON and the `category` column agree.
+pub fn category_str(c: crate::model::Category) -> &'static str {
+    use crate::model::Category::*;
+    match c {
+        Frontend => "Frontend",
+        Backend => "Backend",
+        Fullstack => "Fullstack",
+        Mobile => "Mobile",
+        DevOps => "DevOps",
+        DataMl => "DataMl",
+        Library => "Library",
+        Cli => "Cli",
+        Docs => "Docs",
+        Unknown => "Unknown",
+    }
+}
+
+fn confidence_level_str(c: crate::model::ConfidenceLevel) -> &'static str {
+    use crate::model::ConfidenceLevel::*;
+    match c {
+        Low => "low",
+        Medium => "medium",
+        High => "high",
+    }
+}
+
+/// Replace a repo's `repo_technologies` rows wholesale (FR-2.3). Evidence is
+/// stored as a JSON array so the UI can distinguish dependency-confirmed
+/// from marker-only detections (FR-2.4).
+pub fn replace_technologies(
+    conn: &Connection,
+    repo_id: i64,
+    techs: &[crate::model::DetectedTech],
+) -> CoreResult<()> {
+    conn.execute(
+        "DELETE FROM repo_technologies WHERE repo_id = ?1",
+        [repo_id],
+    )?;
+    let mut stmt = conn.prepare_cached(
+        "INSERT INTO repo_technologies (repo_id, tech, kind, evidence) VALUES (?1, ?2, ?3, ?4)",
+    )?;
+    for t in techs {
+        let evidence = serde_json::to_string(&t.evidence)?;
+        stmt.execute(rusqlite::params![repo_id, t.tech, t.kind, evidence])?;
+    }
+    Ok(())
+}
+
+/// Write the computed classification onto a repo row. The `category_manual`
+/// override (FR-3.7) is written by a separate path (M3-5) and is deliberately
+/// **not** touched here — a re-scan must never silently discard it.
+pub fn set_classification(
+    conn: &Connection,
+    repo_id: i64,
+    c: &crate::model::Classification,
+) -> CoreResult<()> {
+    let scores = serde_json::to_string(&c.scores)?;
+    conn.execute(
+        "UPDATE repos
+            SET category = ?2, category_confidence = ?3, category_scores = ?4
+          WHERE id = ?1",
+        rusqlite::params![
+            repo_id,
+            category_str(c.category),
+            confidence_level_str(c.confidence),
+            scores,
+        ],
+    )?;
+    Ok(())
+}
+
 /// `(path, scan_fingerprint)` for every repo — loaded once at the start of a
 /// scan so the incremental-skip check (DESIGN §6.5) never touches the DB
 /// from the parallel analysis stage.

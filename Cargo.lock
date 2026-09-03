@@ -3796,6 +3796,7 @@ dependencies = [
  "csv",
  "cvss",
  "git2",
+ "globset",
  "ignore",
  "pep440_rs",
  "r2d2",

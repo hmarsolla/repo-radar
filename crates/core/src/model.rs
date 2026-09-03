@@ -219,7 +219,9 @@ pub struct Finding {
 
 /// The closed set of repository categories (FR-3.1). `Unknown` is a real
 /// answer — guessing is worse than admitting ignorance (FR-3.5).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Type)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, Type,
+)]
 pub enum Category {
     Frontend,
     Backend,

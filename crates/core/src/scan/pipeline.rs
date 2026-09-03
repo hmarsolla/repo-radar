@@ -420,14 +420,28 @@ fn analyze_repo_inner(
     };
     warnings.extend(manifests.warnings);
 
+    // Technology detection (M3-2) and categorization (M3-3) run off the same
+    // signal bundle: resolved deps, the repo-relative file list, languages,
+    // and parsed manifests. A bare repo has no working tree, so both come
+    // back empty rather than guessing from a name.
+    let signals = crate::rules::signals::RepoSignals {
+        deps: &manifests.dependencies,
+        files: &manifests.files,
+        languages: &langs,
+        manifests: &manifests.manifests,
+    };
+    let technologies = crate::rules::technologies::detect(&ctx.rules.technologies, &signals);
+    let classification =
+        crate::rules::categories::classify(&ctx.rules.settings, &ctx.rules.categories, &signals);
+
     RepoAnalysis {
         repo: identity.clone(),
         git,
         languages: langs,
         dependencies: manifests.dependencies,
         manifests: manifests.manifests,
-        technologies: Vec::new(),                 // M3
-        classification: unknown_classification(), // M3
+        technologies,
+        classification,
         is_monorepo: manifests.monorepo,
         warnings,
     }
@@ -531,6 +545,8 @@ fn flush(
                         &analysis.manifests,
                         &analysis.dependencies,
                     )?;
+                    repo_db::replace_technologies(&tx, id, &analysis.technologies)?;
+                    repo_db::set_classification(&tx, id, &analysis.classification)?;
                     (id, analysis.warnings.len())
                 }
                 Outcome::Unchanged => {

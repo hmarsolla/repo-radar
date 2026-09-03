@@ -384,21 +384,21 @@ Goal: point the app at a folder and see real repositories with real git and lang
 
 ## M3 — Classification
 
-- [ ] **M3-1 · Rule pack loading and merge** · Size: M · Deps: M0-3
+- [x] **M3-1 · Rule pack loading and merge** · Size: M · Deps: M0-3
   Refs: FR-2.6, FR-3.8, DESIGN §10.1, §10.2
 
   Shipped TOML via `include_str!`; user pack from `<config>/rules/` merged by rule `id` (same id replaces, new id appends). Malformed user pack → startup `Warning`, app continues on the shipped pack. `rule_pack_version` = hash of the merged pack, feeding the scan fingerprint.
 
   **Done when:** A user override changes behavior without a rebuild; a malformed pack does not prevent startup; editing a rule invalidates cached classifications.
 
-- [ ] **M3-2 · Technology detection** · Size: L · Deps: M3-1, M2-10
+- [x] **M3-2 · Technology detection** · Size: L · Deps: M3-1, M2-10
   Refs: FR-2.3–2.5, DESIGN §10.1
 
   Dependency signals and marker-file globs. Evidence recorded per detection. Package managers derived from which lockfile is present.
 
   **Done when:** Detections carry their signals, and marker-only detections render with lower prominence than dependency-confirmed ones (FR-2.4).
 
-- [ ] **M3-3 · Categorization engine** · Size: L · Deps: M3-1, M3-2
+- [x] **M3-3 · Categorization engine** · Size: L · Deps: M3-1, M3-2
   Refs: FR-3.1–3.5, DESIGN §10.3
 
   Weighted accumulation; floor → `Unknown`; frontend+backend both above threshold → `Fullstack`; confidence from margin. Full breakdown serialized to `category_scores`.

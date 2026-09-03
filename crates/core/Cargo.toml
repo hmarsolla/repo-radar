@@ -42,6 +42,9 @@ csv = "1"
 
 # Scan pipeline (M1)
 ignore = "0.4"
+# Glob matching for rule-pack `any_file` signals (M3-2). Already in the tree
+# via `ignore`; taken as a direct dependency here.
+globset = "0.4"
 # Local-only git access — no https/ssh features, we never fetch over the
 # network (FR-7.6). libgit2 is vendored so no system dependency.
 git2 = { version = "0.21", default-features = false, features = ["vendored-libgit2"] }
