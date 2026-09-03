@@ -33,6 +33,13 @@ cvss = "2"
 toml = "1"
 serde_yaml_ng = "0.10"
 
+# Advisory sync (M2-13 … M2-15) — the only outbound network IO in core
+# rustls + webpki-roots — no system OpenSSL dependency on Linux/CI, and a
+# bundled trust store. The one-time build cost is worth the portability.
+reqwest = { version = "0.13", default-features = false, features = ["blocking", "rustls", "webpki-roots", "gzip"] }
+zip = { version = "8", default-features = false, features = ["deflate"] }
+csv = "1"
+
 # Scan pipeline (M1)
 ignore = "0.4"
 # Local-only git access — no https/ssh features, we never fetch over the
@@ -44,3 +51,4 @@ rayon = "1"
 [dev-dependencies]
 tempfile = "3"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+rusqlite = { version = "0.40", features = ["bundled"] }

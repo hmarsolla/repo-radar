@@ -9,6 +9,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use rusqlite::params;
 use tempfile::TempDir;
 
 /// A temporary directory tree that fixture repos are created inside.
@@ -165,6 +166,34 @@ impl Default for GitFixture {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Insert one advisory + one event-range affected entry directly, the way a
+/// sync would. Used to simulate "the advisory database changed" between
+/// scans (Journey B).
+pub fn insert_advisory(
+    db: &repo_radar_core::db::Db,
+    id: &str,
+    kind: &str,        // "compromise" | "vulnerability"
+    severity: &str,    // "critical" | "high" | ...
+    ecosystem: &str,   // "npm" | "PyPI" | "crates.io" | "Go"
+    package: &str,     // normalized name
+    events_json: &str, // e.g. r#"[{"introduced":"0"},{"fixed":"1.3.0"}]"#
+) {
+    db.write(|c| {
+        c.execute(
+            "INSERT INTO advisories (id, kind, summary, details, severity, modified)
+             VALUES (?1, ?2, ?3, '', ?4, '2026-01-01T00:00:00Z')",
+            params![id, kind, format!("test advisory {id}"), severity],
+        )?;
+        c.execute(
+            "INSERT INTO affected_ranges (advisory_id, ecosystem, package_name, range_type, events)
+             VALUES (?1, ?2, ?3, 'SEMVER', ?4)",
+            params![id, ecosystem, package, events_json],
+        )?;
+        Ok(())
+    })
+    .expect("insert advisory");
 }
 
 /// Normalise a path the way `discovery` does, for comparing against

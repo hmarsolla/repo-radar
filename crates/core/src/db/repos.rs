@@ -98,6 +98,7 @@ fn rfc3339(opt: &Option<chrono::DateTime<chrono::Utc>>) -> Option<String> {
 /// Insert or update a repository row, keyed on its unique `path`. Returns
 /// the repo's id. Git columns are populated from `git` when present; a bare
 /// repo or a failed git read leaves them NULL.
+#[allow(clippy::too_many_arguments)]
 pub fn upsert_repo(
     conn: &Connection,
     root_id: i64,
@@ -105,18 +106,19 @@ pub fn upsert_repo(
     git: Option<&GitInfo>,
     parent_repo_id: Option<i64>,
     fingerprint: Option<&str>,
+    is_monorepo: bool,
 ) -> CoreResult<i64> {
     let g = git.cloned().unwrap_or_default();
     conn.execute(
         "INSERT INTO repos (
-             root_id, parent_repo_id, path, name, is_bare,
+             root_id, parent_repo_id, path, name, is_bare, is_monorepo,
              head_sha, branch, last_commit_at, last_commit_summary,
              commits_90d, commits_total, author_count,
              dirty_modified, dirty_staged, dirty_untracked,
              ahead, behind, remote_url, branch_count, has_stash,
              last_scanned_at, scan_fingerprint
          ) VALUES (
-             ?1, ?2, ?3, ?4, ?5,
+             ?1, ?2, ?3, ?4, ?5, ?23,
              ?6, ?7, ?8, ?9,
              ?10, ?11, ?12,
              ?13, ?14, ?15,
@@ -128,6 +130,7 @@ pub fn upsert_repo(
              parent_repo_id = excluded.parent_repo_id,
              name = excluded.name,
              is_bare = excluded.is_bare,
+             is_monorepo = excluded.is_monorepo,
              head_sha = excluded.head_sha,
              branch = excluded.branch,
              last_commit_at = excluded.last_commit_at,
@@ -168,6 +171,7 @@ pub fn upsert_repo(
             g.has_stash.map(|b| b as i64),
             chrono::Utc::now().to_rfc3339(),
             fingerprint,
+            is_monorepo as i64,
         ],
     )?;
 
@@ -177,6 +181,87 @@ pub fn upsert_repo(
         |r| r.get(0),
     )?;
     Ok(id)
+}
+
+/// Replace a repo's `manifests` and `dependencies` rows wholesale. A
+/// submodule child's dependencies are attributed to the parent's `repo_id`
+/// by the caller (FR-1.5); this appends rather than clobbering when
+/// `repo_id` is a parent aggregating several children.
+pub fn replace_manifests_and_deps(
+    conn: &Connection,
+    repo_id: i64,
+    manifests: &[crate::model::ParsedManifest],
+    deps: &[crate::model::Dependency],
+) -> CoreResult<()> {
+    conn.execute("DELETE FROM dependencies WHERE repo_id = ?1", [repo_id])?;
+    conn.execute("DELETE FROM manifests WHERE repo_id = ?1", [repo_id])?;
+
+    // manifest path -> row id, so dependencies can reference the right manifest.
+    let mut manifest_ids: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+    {
+        let mut mstmt = conn.prepare_cached(
+            "INSERT INTO manifests (repo_id, path, ecosystem, kind, content_hash)
+             VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(repo_id, path) DO UPDATE SET
+                 ecosystem = excluded.ecosystem, kind = excluded.kind,
+                 content_hash = excluded.content_hash",
+        )?;
+        for m in manifests {
+            mstmt.execute(rusqlite::params![
+                repo_id,
+                m.path.as_str(),
+                m.ecosystem.osv_id(),
+                m.kind.as_str(),
+                m.content_hash,
+            ])?;
+            let id: i64 = conn.query_row(
+                "SELECT id FROM manifests WHERE repo_id = ?1 AND path = ?2",
+                rusqlite::params![repo_id, m.path.as_str()],
+                |r| r.get(0),
+            )?;
+            manifest_ids.insert(m.path.0.clone(), id);
+        }
+    }
+
+    let mut dstmt = conn.prepare_cached(
+        "INSERT INTO dependencies
+             (repo_id, manifest_id, ecosystem, name, raw_name, version, confidence, scope, is_direct)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+    )?;
+    for d in deps {
+        let Some(&manifest_id) = manifest_ids.get(d.manifest_path.as_str()) else {
+            continue; // dependency whose manifest didn't record (shouldn't happen)
+        };
+        dstmt.execute(rusqlite::params![
+            repo_id,
+            manifest_id,
+            d.ecosystem.osv_id(),
+            d.name,
+            d.raw_name,
+            d.version,
+            confidence_str(d.confidence),
+            scope_str(d.scope),
+            d.is_direct as i64,
+        ])?;
+    }
+    Ok(())
+}
+
+fn confidence_str(c: crate::model::Confidence) -> &'static str {
+    match c {
+        crate::model::Confidence::Exact => "exact",
+        crate::model::Confidence::Range => "range",
+    }
+}
+
+fn scope_str(s: crate::model::Scope) -> &'static str {
+    match s {
+        crate::model::Scope::Runtime => "runtime",
+        crate::model::Scope::Dev => "dev",
+        crate::model::Scope::Build => "build",
+        crate::model::Scope::Optional => "optional",
+        crate::model::Scope::Peer => "peer",
+    }
 }
 
 /// `(path, scan_fingerprint)` for every repo — loaded once at the start of a

@@ -11,6 +11,7 @@
 pub mod discovery;
 pub mod git;
 pub mod languages;
+pub mod manifests;
 pub mod pipeline;
 pub mod progress;
 pub mod submodule;

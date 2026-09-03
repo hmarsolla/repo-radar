@@ -42,6 +42,7 @@ pub struct ScanContext<'a> {
     pub discovery: discovery::DiscoveryConfig,
     pub git: git::GitConfig,
     pub languages: languages::LanguageConfig,
+    pub parsers: crate::parsers::ParserRegistry,
 }
 
 impl<'a> ScanContext<'a> {
@@ -52,6 +53,7 @@ impl<'a> ScanContext<'a> {
             discovery: discovery::DiscoveryConfig::default(),
             git: git::GitConfig::default(),
             languages: languages::LanguageConfig::default(),
+            parsers: crate::parsers::ParserRegistry::builtin(),
         }
     }
 
@@ -188,6 +190,7 @@ pub fn run_scan(
     // ---- Stages 2 + 3: analyze (parallel) → persist (single writer) -------
     let (tx, rx) = mpsc::channel::<AnalysisMsg>();
     let mut persisted = 0usize;
+    let mut stage4_targets: Vec<(i64, String)> = Vec::new();
 
     std::thread::scope(|scope| -> CoreResult<()> {
         let writer = scope.spawn(|| writer_loop(ctx.db, rx, reporter, cancel));
@@ -200,13 +203,20 @@ pub fn run_scan(
 
             // Incremental skip (M1-12): recompute the fingerprint from cheap
             // inputs and compare. Manifest hashes join the formula with the
-            // parsers in M2-10; for now it is HEAD + rule-pack version.
+            // parts: HEAD sha + every manifest file's content hash + the
+            // rule-pack version (§6.5).
             let head_sha = if item.identity.is_bare {
                 None
             } else {
                 cheap_head_sha(path)
             };
-            let fingerprint = compute_fingerprint(head_sha.as_deref(), &[], &rule_pack_version);
+            let manifest_hashes = if item.identity.is_bare {
+                Vec::new()
+            } else {
+                crate::scan::manifests::manifest_hashes(path, &ctx.parsers, &ctx.discovery)
+            };
+            let fingerprint =
+                compute_fingerprint(head_sha.as_deref(), &manifest_hashes, &rule_pack_version);
 
             let already = prior
                 .get(&item.identity.path)
@@ -235,12 +245,33 @@ pub fn run_scan(
         })??;
         persisted = outcome.repos_persisted;
         all_warnings.extend(outcome.warnings);
+        stage4_targets = outcome.touched;
         Ok(())
     })?;
 
-    // ---- Stage 4: match + score -----------------------------------------
-    // Runs for every repo on every scan, fingerprint or not (DESIGN §6.5).
-    // Lands in M2-18.
+    // ---- Stage 4: match + score (M2-18) --------------------------------
+    // Runs for EVERY repo touched this scan, fingerprint-unchanged ones
+    // included (DESIGN §6.5) — the advisory database moves independently of
+    // the code. This is Journey B.
+    let weights = crate::score::Weights::default();
+    for (repo_id, path) in &stage4_targets {
+        if cancel.is_cancelled() {
+            break;
+        }
+        match ctx
+            .db
+            .write(|c| crate::db::findings::match_score_and_persist(c, *repo_id, path, &weights))
+        {
+            Ok(res) => all_warnings.extend(res.warnings),
+            Err(e) => {
+                all_warnings.push(Warning::new(
+                    WarningScope::Repo(path.clone()),
+                    WarningKind::Other,
+                    format!("scoring failed: {e}"),
+                ));
+            }
+        }
+    }
 
     // ---- Finalise -------------------------------------------------------
     let cancelled = cancel.is_cancelled();
@@ -290,6 +321,10 @@ enum Outcome {
 struct WriterOutcome {
     repos_persisted: usize,
     warnings: Vec<Warning>,
+    /// `(repo_id, path)` for every top-level repo the writer touched — the
+    /// input to stage 4, which re-runs for all of them regardless of
+    /// fingerprint (DESIGN §6.5).
+    touched: Vec<(i64, String)>,
 }
 
 /// Placeholder classification until the categorizer lands (M3-3).
@@ -326,8 +361,10 @@ pub fn guard_analysis(identity: &RepoIdentity, f: impl FnOnce() -> RepoAnalysis)
             git: None,
             languages: Vec::new(),
             dependencies: Vec::new(),
+            manifests: Vec::new(),
             technologies: Vec::new(),
             classification: unknown_classification(),
+            is_monorepo: false,
             warnings: vec![Warning::new(
                 WarningScope::Repo(identity.path.clone()),
                 WarningKind::Panic,
@@ -375,13 +412,23 @@ fn analyze_repo_inner(
         languages::analyze(path, &ctx.languages)
     };
 
+    // Dependency inventory (M2-10). Bare repos have no working tree.
+    let manifests = if identity.is_bare {
+        crate::scan::manifests::ManifestScan::default()
+    } else {
+        crate::scan::manifests::scan_manifests(path, &ctx.parsers, &ctx.discovery)
+    };
+    warnings.extend(manifests.warnings);
+
     RepoAnalysis {
         repo: identity.clone(),
         git,
         languages: langs,
-        dependencies: Vec::new(),                 // M2
+        dependencies: manifests.dependencies,
+        manifests: manifests.manifests,
         technologies: Vec::new(),                 // M3
         classification: unknown_classification(), // M3
+        is_monorepo: manifests.monorepo,
         warnings,
     }
 }
@@ -398,6 +445,7 @@ fn writer_loop(
 
     let mut persisted = 0usize;
     let mut warnings: Vec<Warning> = Vec::new();
+    let mut touched: Vec<(i64, String)> = Vec::new();
     let mut batch: Vec<AnalysisMsg> = Vec::with_capacity(BATCH);
 
     loop {
@@ -405,12 +453,26 @@ fn writer_loop(
             Ok(msg) => {
                 batch.push(msg);
                 if batch.len() >= BATCH {
-                    flush(db, &mut batch, reporter, &mut persisted, &mut warnings)?;
+                    flush(
+                        db,
+                        &mut batch,
+                        reporter,
+                        &mut persisted,
+                        &mut warnings,
+                        &mut touched,
+                    )?;
                 }
             }
             Err(_) => {
                 // Channel closed — analysis is done.
-                flush(db, &mut batch, reporter, &mut persisted, &mut warnings)?;
+                flush(
+                    db,
+                    &mut batch,
+                    reporter,
+                    &mut persisted,
+                    &mut warnings,
+                    &mut touched,
+                )?;
                 break;
             }
         }
@@ -419,15 +481,18 @@ fn writer_loop(
     Ok(WriterOutcome {
         repos_persisted: persisted,
         warnings,
+        touched,
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn flush(
     db: &Db,
     batch: &mut Vec<AnalysisMsg>,
     reporter: &dyn ScanReporter,
     persisted: &mut usize,
     warnings: &mut Vec<Warning>,
+    touched: &mut Vec<(i64, String)>,
 ) -> CoreResult<()> {
     if batch.is_empty() {
         return Ok(());
@@ -447,6 +512,9 @@ fn flush(
 
             let (repo_id, warning_count) = match &msg.outcome {
                 Outcome::Analyzed(analysis) => {
+                    // A submodule child's dependencies are attributed to the
+                    // parent's `repo_id` (FR-1.5).
+                    let owner_id = parent_repo_id;
                     let id = repo_db::upsert_repo(
                         &tx,
                         msg.root_id,
@@ -454,8 +522,15 @@ fn flush(
                         analysis.git.as_ref(),
                         parent_repo_id,
                         Some(&msg.fingerprint),
+                        analysis.is_monorepo,
                     )?;
                     repo_db::replace_languages(&tx, id, &analysis.languages)?;
+                    repo_db::replace_manifests_and_deps(
+                        &tx,
+                        owner_id.unwrap_or(id),
+                        &analysis.manifests,
+                        &analysis.dependencies,
+                    )?;
                     (id, analysis.warnings.len())
                 }
                 Outcome::Unchanged => {
@@ -489,6 +564,7 @@ fn flush(
     }
     for summary in &done {
         reporter.repo_done(summary);
+        touched.push((summary.repo_id, summary.path.clone()));
         *persisted += 1;
     }
     Ok(())

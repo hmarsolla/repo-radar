@@ -117,6 +117,41 @@ pub struct Dependency {
     pub manifest_path: RelPath,
 }
 
+/// Whether a parsed file pins exact versions (a lockfile) or declares ranges
+/// (a manifest). Drives the confidence a parser normally emits (§7.2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "lowercase")]
+pub enum ManifestKind {
+    Lockfile,
+    Manifest,
+}
+
+impl ManifestKind {
+    pub fn confidence(self) -> Confidence {
+        match self {
+            ManifestKind::Lockfile => Confidence::Exact,
+            ManifestKind::Manifest => Confidence::Range,
+        }
+    }
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ManifestKind::Lockfile => "lockfile",
+            ManifestKind::Manifest => "manifest",
+        }
+    }
+}
+
+/// A manifest that contributed dependencies — one `manifests` table row, and
+/// an input to the scan fingerprint (§6.5).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct ParsedManifest {
+    pub path: RelPath,
+    pub ecosystem: Ecosystem,
+    pub kind: ManifestKind,
+    /// `blake3` hex of the file content.
+    pub content_hash: String,
+}
+
 // ---------------------------------------------------------------------------
 // Advisories and findings
 // ---------------------------------------------------------------------------
@@ -417,8 +452,12 @@ pub struct RepoAnalysis {
     pub git: Option<GitInfo>,
     pub languages: Vec<LanguageStat>,
     pub dependencies: Vec<Dependency>,
+    /// The manifest files those dependencies came from (FR-4.7, §6.5).
+    pub manifests: Vec<ParsedManifest>,
     pub technologies: Vec<DetectedTech>,
     pub classification: Classification,
+    /// `true` when the repo has more than one manifest root (FR-4.7).
+    pub is_monorepo: bool,
     /// Recoverable problems hit while analysing this repo (FR-1.10, FR-4.8).
     pub warnings: Vec<Warning>,
 }

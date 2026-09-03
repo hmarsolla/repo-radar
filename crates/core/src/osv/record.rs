@@ -266,6 +266,29 @@ pub fn normalize(record: &OsvRecord) -> Option<(NormalizedAdvisory, Vec<Normaliz
     Some((advisory, affected))
 }
 
+/// Parse the `affected_ranges.events` JSON blob
+/// (`[{"introduced":"0"},{"fixed":"1.2.3"}]`) back into events — the inverse
+/// of what sync writes, used by the matcher's Phase-1 read.
+pub fn parse_events_json(json: &str) -> Vec<RangeEvent> {
+    let Ok(arr) = serde_json::from_str::<Vec<serde_json::Map<String, serde_json::Value>>>(json)
+    else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for obj in arr {
+        if let Some(v) = obj.get("introduced").and_then(|v| v.as_str()) {
+            out.push(RangeEvent::Introduced(v.to_string()));
+        } else if let Some(v) = obj.get("fixed").and_then(|v| v.as_str()) {
+            out.push(RangeEvent::Fixed(v.to_string()));
+        } else if let Some(v) = obj.get("last_affected").and_then(|v| v.as_str()) {
+            out.push(RangeEvent::LastAffected(v.to_string()));
+        } else if let Some(v) = obj.get("limit").and_then(|v| v.as_str()) {
+            out.push(RangeEvent::Limit(v.to_string()));
+        }
+    }
+    out
+}
+
 fn normalize_range(r: &OsvRange) -> Option<NormalizedRange> {
     let range_type = match r.range_type.as_str() {
         "SEMVER" => RangeType::Semver,

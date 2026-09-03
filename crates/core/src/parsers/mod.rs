@@ -17,37 +17,12 @@ pub mod npm;
 pub mod python;
 
 pub use normalize::normalize_package_name;
+// Re-export so parser impls can `use crate::parsers::ManifestKind`.
+pub use crate::model::{ManifestKind, ParsedManifest};
 
 use std::collections::BTreeMap;
 
-use crate::model::{Confidence, Dependency, Ecosystem, RelPath};
-
-/// Whether a parser consumes a lockfile (exact versions) or a manifest
-/// (ranges).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ManifestKind {
-    Lockfile,
-    Manifest,
-}
-
-impl ManifestKind {
-    /// The confidence a parser of this kind normally emits (§7.2). A parser
-    /// may deviate — e.g. a yarn-berry fallback emits `Range` from a
-    /// `Lockfile`-kind parser.
-    pub fn confidence(self) -> Confidence {
-        match self {
-            ManifestKind::Lockfile => Confidence::Exact,
-            ManifestKind::Manifest => Confidence::Range,
-        }
-    }
-
-    pub fn as_str(self) -> &'static str {
-        match self {
-            ManifestKind::Lockfile => "lockfile",
-            ManifestKind::Manifest => "manifest",
-        }
-    }
-}
+use crate::model::{Dependency, Ecosystem, RelPath};
 
 #[derive(Debug, thiserror::Error)]
 pub enum ParseError {
@@ -113,17 +88,6 @@ pub trait LockfileParser: Send + Sync {
         primary_path: &RelPath,
         sibling: &SiblingFiles<'_>,
     ) -> Result<ParseOk, ParseError>;
-}
-
-/// A manifest that contributed dependencies, for the `manifests` table and
-/// the scan fingerprint (§6.5).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ParsedManifest {
-    pub path: RelPath,
-    pub ecosystem: Ecosystem,
-    pub kind: ManifestKind,
-    /// `blake3` hex of the file content.
-    pub content_hash: String,
 }
 
 /// The result of parsing one directory's manifests.
@@ -275,6 +239,7 @@ fn join_rel(dir: &str, file: &str) -> RelPath {
 #[cfg(test)]
 mod selection_tests {
     use super::*;
+    use crate::model::Confidence;
 
     fn files(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
         pairs
