@@ -2,15 +2,15 @@
 
 use std::sync::{Arc, Mutex};
 
+use repo_radar_core::scan::CancelToken;
 use repo_radar_core::CoreContext;
 
 /// Held in Tauri's managed state and handed to every command.
 pub struct AppState {
     /// DB pool, rule packs, injected paths — the shared analysis context.
     pub core: Arc<CoreContext>,
-    /// Cancel token + join handle for the scan in flight, if any. Read from
-    /// **M1-6** (`scan_start` / `scan_cancel`).
-    #[allow(dead_code)]
+    /// The scan in flight, if any: its id and cancel token
+    /// (`scan_start` / `scan_cancel`, M1-6). At most one scan runs at a time.
     pub active_scan: Mutex<Option<ScanHandle>>,
     /// At most one advisory sync at a time; a manual **Sync now** must not
     /// race the scheduled sync into the same tables (DESIGN §12.3). Read
@@ -29,8 +29,8 @@ impl AppState {
     }
 }
 
-/// Placeholder for the running-scan handle; fleshed out in M1-6.
-#[allow(dead_code)]
+/// The running scan's id plus the token that cancels it.
 pub struct ScanHandle {
     pub scan_id: i64,
+    pub cancel: CancelToken,
 }

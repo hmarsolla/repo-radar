@@ -10,6 +10,7 @@ pub mod findings;
 pub mod migrations;
 pub mod pool;
 pub mod repos;
+pub mod scans;
 
 use std::path::Path;
 

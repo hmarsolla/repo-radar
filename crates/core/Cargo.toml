@@ -22,6 +22,14 @@ r2d2 = "0.8"
 r2d2_sqlite = "0.35"
 blake3 = "1"
 
+# Scan pipeline (M1)
+ignore = "0.4"
+# Local-only git access — no https/ssh features, we never fetch over the
+# network (FR-7.6). libgit2 is vendored so no system dependency.
+git2 = { version = "0.21", default-features = false, features = ["vendored-libgit2"] }
+tokei = "14"
+rayon = "1"
+
 [dev-dependencies]
 tempfile = "3"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

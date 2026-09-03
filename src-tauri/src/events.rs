@@ -13,6 +13,7 @@ use tauri_specta::Event;
 
 /// `scan:progress` — drives the global progress bar.
 #[derive(Debug, Clone, Serialize, Deserialize, Type, Event)]
+#[serde(rename_all = "camelCase")]
 pub struct ScanProgress {
     pub scan_id: i64,
     pub discovered: u32,
@@ -22,6 +23,7 @@ pub struct ScanProgress {
 /// `scan:repo_done` — one repo finished; the UI invalidates `['repos']` and
 /// `['repo', id]` (DESIGN §14.1), populating the list incrementally.
 #[derive(Debug, Clone, Serialize, Deserialize, Type, Event)]
+#[serde(rename_all = "camelCase")]
 pub struct ScanRepoDone {
     pub scan_id: i64,
     pub repo_id: i64,
@@ -32,6 +34,7 @@ pub struct ScanRepoDone {
 
 /// `scan:warning` — a recoverable problem, surfaced as it occurs.
 #[derive(Debug, Clone, Serialize, Deserialize, Type, Event)]
+#[serde(rename_all = "camelCase")]
 pub struct ScanWarning {
     pub scan_id: i64,
     pub warning: Warning,
@@ -39,6 +42,7 @@ pub struct ScanWarning {
 
 /// `scan:complete`.
 #[derive(Debug, Clone, Serialize, Deserialize, Type, Event)]
+#[serde(rename_all = "camelCase")]
 pub struct ScanComplete {
     pub scan_id: i64,
     pub repos_scanned: u32,
@@ -48,12 +52,14 @@ pub struct ScanComplete {
 
 /// `scan:error` — scan-level failure only, never per-repo.
 #[derive(Debug, Clone, Serialize, Deserialize, Type, Event)]
+#[serde(rename_all = "camelCase")]
 pub struct ScanError {
     pub message: String,
 }
 
 /// `sync:progress`.
 #[derive(Debug, Clone, Serialize, Deserialize, Type, Event)]
+#[serde(rename_all = "camelCase")]
 pub struct SyncProgress {
     pub ecosystem: String,
     pub phase: String,
@@ -63,6 +69,7 @@ pub struct SyncProgress {
 
 /// `sync:complete` — triggers a findings refresh in the UI.
 #[derive(Debug, Clone, Serialize, Deserialize, Type, Event)]
+#[serde(rename_all = "camelCase")]
 pub struct SyncComplete {
     pub ok: bool,
     pub message: Option<String>,

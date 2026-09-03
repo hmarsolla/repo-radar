@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use specta::Type;
 
 use crate::error::CoreResult;
+use crate::model::{GitInfo, LanguageStat, RepoIdentity};
 
 /// A configured scan root (FR-10.1). `id` is the SQLite rowid.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -84,6 +85,382 @@ pub fn set_scan_root_enabled(conn: &Connection, id: i64, enabled: bool) -> CoreR
         rusqlite::params![id, enabled as i64],
     )?;
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Repo upsert + child-table writes (used by the scan writer thread — M1-5)
+// ---------------------------------------------------------------------------
+
+fn rfc3339(opt: &Option<chrono::DateTime<chrono::Utc>>) -> Option<String> {
+    opt.map(|d| d.to_rfc3339())
+}
+
+/// Insert or update a repository row, keyed on its unique `path`. Returns
+/// the repo's id. Git columns are populated from `git` when present; a bare
+/// repo or a failed git read leaves them NULL.
+pub fn upsert_repo(
+    conn: &Connection,
+    root_id: i64,
+    identity: &RepoIdentity,
+    git: Option<&GitInfo>,
+    parent_repo_id: Option<i64>,
+    fingerprint: Option<&str>,
+) -> CoreResult<i64> {
+    let g = git.cloned().unwrap_or_default();
+    conn.execute(
+        "INSERT INTO repos (
+             root_id, parent_repo_id, path, name, is_bare,
+             head_sha, branch, last_commit_at, last_commit_summary,
+             commits_90d, commits_total, author_count,
+             dirty_modified, dirty_staged, dirty_untracked,
+             ahead, behind, remote_url, branch_count, has_stash,
+             last_scanned_at, scan_fingerprint
+         ) VALUES (
+             ?1, ?2, ?3, ?4, ?5,
+             ?6, ?7, ?8, ?9,
+             ?10, ?11, ?12,
+             ?13, ?14, ?15,
+             ?16, ?17, ?18, ?19, ?20,
+             ?21, ?22
+         )
+         ON CONFLICT(path) DO UPDATE SET
+             root_id = excluded.root_id,
+             parent_repo_id = excluded.parent_repo_id,
+             name = excluded.name,
+             is_bare = excluded.is_bare,
+             head_sha = excluded.head_sha,
+             branch = excluded.branch,
+             last_commit_at = excluded.last_commit_at,
+             last_commit_summary = excluded.last_commit_summary,
+             commits_90d = excluded.commits_90d,
+             commits_total = excluded.commits_total,
+             author_count = excluded.author_count,
+             dirty_modified = excluded.dirty_modified,
+             dirty_staged = excluded.dirty_staged,
+             dirty_untracked = excluded.dirty_untracked,
+             ahead = excluded.ahead,
+             behind = excluded.behind,
+             remote_url = excluded.remote_url,
+             branch_count = excluded.branch_count,
+             has_stash = excluded.has_stash,
+             last_scanned_at = excluded.last_scanned_at,
+             scan_fingerprint = excluded.scan_fingerprint",
+        rusqlite::params![
+            root_id,
+            parent_repo_id,
+            identity.path,
+            identity.name,
+            identity.is_bare as i64,
+            g.head_sha,
+            g.branch,
+            rfc3339(&g.last_commit_at),
+            g.last_commit_summary,
+            g.commits_90d,
+            g.commits_total,
+            g.author_count,
+            g.dirty_modified,
+            g.dirty_staged,
+            g.dirty_untracked,
+            g.ahead,
+            g.behind,
+            g.remote_url,
+            g.branch_count,
+            g.has_stash.map(|b| b as i64),
+            chrono::Utc::now().to_rfc3339(),
+            fingerprint,
+        ],
+    )?;
+
+    let id = conn.query_row(
+        "SELECT id FROM repos WHERE path = ?1",
+        [&identity.path],
+        |r| r.get(0),
+    )?;
+    Ok(id)
+}
+
+/// `(path, scan_fingerprint)` for every repo — loaded once at the start of a
+/// scan so the incremental-skip check (DESIGN §6.5) never touches the DB
+/// from the parallel analysis stage.
+pub fn all_fingerprints(conn: &Connection) -> CoreResult<Vec<(String, Option<String>)>> {
+    let mut stmt = conn.prepare("SELECT path, scan_fingerprint FROM repos")?;
+    let rows = stmt
+        .query_map([], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows)
+}
+
+/// Mark a repo as seen by the current scan without re-analysing it.
+pub fn touch_scanned(conn: &Connection, repo_id: i64) -> CoreResult<()> {
+    conn.execute(
+        "UPDATE repos SET last_scanned_at = ?2 WHERE id = ?1",
+        rusqlite::params![repo_id, chrono::Utc::now().to_rfc3339()],
+    )?;
+    Ok(())
+}
+
+/// Replace a repo's language rows wholesale.
+pub fn replace_languages(
+    conn: &Connection,
+    repo_id: i64,
+    langs: &[LanguageStat],
+) -> CoreResult<()> {
+    conn.execute("DELETE FROM repo_languages WHERE repo_id = ?1", [repo_id])?;
+    let mut stmt = conn.prepare_cached(
+        "INSERT INTO repo_languages
+             (repo_id, language, code_lines, comment_lines, files, percentage)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+    )?;
+    for l in langs {
+        stmt.execute(rusqlite::params![
+            repo_id,
+            l.language,
+            l.code_lines as i64,
+            l.comment_lines as i64,
+            l.files as i64,
+            l.percentage as f64,
+        ])?;
+    }
+    Ok(())
+}
+
+/// Look up a repo id by its normalised path.
+pub fn repo_id_by_path(conn: &Connection, path: &str) -> CoreResult<Option<i64>> {
+    Ok(conn
+        .query_row("SELECT id FROM repos WHERE path = ?1", [path], |r| r.get(0))
+        .optional()?)
+}
+
+/// Compact per-repo row for lists and the scan reporter.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct RepoListItem {
+    pub id: i64,
+    pub name: String,
+    pub path: String,
+    pub is_bare: bool,
+    pub branch: Option<String>,
+    pub last_commit_at: Option<String>,
+    pub dirty: bool,
+    pub primary_language: Option<String>,
+}
+
+const REPO_LIST_SELECT: &str = "
+    SELECT r.id, r.name, r.path, r.is_bare, r.branch, r.last_commit_at,
+           COALESCE(r.dirty_modified,0)+COALESCE(r.dirty_staged,0)+COALESCE(r.dirty_untracked,0) AS dirt,
+           (SELECT language FROM repo_languages l
+             WHERE l.repo_id = r.id ORDER BY l.percentage DESC LIMIT 1) AS primary_language
+      FROM repos r";
+
+fn row_to_list_item(row: &rusqlite::Row<'_>) -> rusqlite::Result<RepoListItem> {
+    Ok(RepoListItem {
+        id: row.get("id")?,
+        name: row.get("name")?,
+        path: row.get("path")?,
+        is_bare: row.get::<_, i64>("is_bare")? != 0,
+        branch: row.get("branch")?,
+        last_commit_at: row.get("last_commit_at")?,
+        dirty: row.get::<_, i64>("dirt")? != 0,
+        primary_language: row.get("primary_language")?,
+    })
+}
+
+/// Every top-level repo (submodule children excluded), newest commit first.
+pub fn list_top_level(conn: &Connection) -> CoreResult<Vec<RepoListItem>> {
+    list_repos(conn, &RepoFilter::default())
+}
+
+/// Sort key for the repo list. Sorting happens in SQL (DESIGN §12.1).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum RepoSort {
+    Name,
+    #[default]
+    LastCommit,
+    PrimaryLanguage,
+}
+
+/// Typed filter for `list_repos`. A struct rather than loose query params so
+/// the whole query — filtering *and* sorting — executes in SQLite and the
+/// client never receives rows it will just hide (DESIGN §12.1).
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase", default)]
+pub struct RepoFilter {
+    /// Free-text match against name and path (case-insensitive substring).
+    pub search: Option<String>,
+    /// Only repos whose primary language equals this.
+    pub language: Option<String>,
+    /// Only repos with a dirty working tree.
+    pub dirty_only: bool,
+    /// Include bare repos (default: included).
+    pub include_bare: bool,
+    pub sort: RepoSort,
+    pub descending: bool,
+}
+
+impl Default for RepoFilter {
+    fn default() -> Self {
+        Self {
+            search: None,
+            language: None,
+            dirty_only: false,
+            include_bare: true,
+            sort: RepoSort::default(),
+            descending: true,
+        }
+    }
+}
+
+/// List repositories matching `filter`, sorted per `filter.sort`. Submodule
+/// children are always excluded — they belong to their parent (FR-1.5).
+pub fn list_repos(conn: &Connection, filter: &RepoFilter) -> CoreResult<Vec<RepoListItem>> {
+    let mut sql = String::from(REPO_LIST_SELECT);
+    sql.push_str(" WHERE r.parent_repo_id IS NULL");
+
+    let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+
+    if let Some(term) = filter.search.as_deref().filter(|s| !s.trim().is_empty()) {
+        sql.push_str(" AND (r.name LIKE ? OR r.path LIKE ?)");
+        let like = format!("%{}%", term.trim());
+        params.push(Box::new(like.clone()));
+        params.push(Box::new(like));
+    }
+    if filter.dirty_only {
+        sql.push_str(
+            " AND (COALESCE(r.dirty_modified,0)+COALESCE(r.dirty_staged,0)+COALESCE(r.dirty_untracked,0)) > 0",
+        );
+    }
+    if !filter.include_bare {
+        sql.push_str(" AND r.is_bare = 0");
+    }
+    if let Some(lang) = filter.language.as_deref().filter(|s| !s.is_empty()) {
+        sql.push_str(
+            " AND (SELECT language FROM repo_languages l
+                    WHERE l.repo_id = r.id ORDER BY l.percentage DESC LIMIT 1) = ?",
+        );
+        params.push(Box::new(lang.to_string()));
+    }
+
+    let order_col = match filter.sort {
+        RepoSort::Name => "r.name COLLATE NOCASE",
+        RepoSort::LastCommit => "r.last_commit_at",
+        RepoSort::PrimaryLanguage => "primary_language",
+    };
+    let dir = if filter.descending { "DESC" } else { "ASC" };
+    // Keep NULLs last regardless of direction; stable tiebreak on name.
+    sql.push_str(&format!(
+        " ORDER BY ({order_col} IS NULL), {order_col} {dir}, r.name COLLATE NOCASE ASC"
+    ));
+
+    let mut stmt = conn.prepare(&sql)?;
+    let param_refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|b| b.as_ref()).collect();
+    let rows = stmt
+        .query_map(param_refs.as_slice(), row_to_list_item)?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows)
+}
+
+/// Full git columns for one repo, for the detail view.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct RepoRecord {
+    pub id: i64,
+    pub name: String,
+    pub path: String,
+    pub is_bare: bool,
+    pub is_monorepo: bool,
+    pub parent_repo_id: Option<i64>,
+    pub head_sha: Option<String>,
+    pub branch: Option<String>,
+    pub last_commit_at: Option<String>,
+    pub last_commit_summary: Option<String>,
+    pub commits_90d: Option<i64>,
+    pub commits_total: Option<i64>,
+    pub author_count: Option<i64>,
+    pub dirty_modified: Option<i64>,
+    pub dirty_staged: Option<i64>,
+    pub dirty_untracked: Option<i64>,
+    pub ahead: Option<i64>,
+    pub behind: Option<i64>,
+    pub remote_url: Option<String>,
+    pub branch_count: Option<i64>,
+    pub has_stash: Option<bool>,
+    pub last_scanned_at: Option<String>,
+}
+
+fn row_to_record(row: &rusqlite::Row<'_>) -> rusqlite::Result<RepoRecord> {
+    Ok(RepoRecord {
+        id: row.get("id")?,
+        name: row.get("name")?,
+        path: row.get("path")?,
+        is_bare: row.get::<_, i64>("is_bare")? != 0,
+        is_monorepo: row.get::<_, i64>("is_monorepo")? != 0,
+        parent_repo_id: row.get("parent_repo_id")?,
+        head_sha: row.get("head_sha")?,
+        branch: row.get("branch")?,
+        last_commit_at: row.get("last_commit_at")?,
+        last_commit_summary: row.get("last_commit_summary")?,
+        commits_90d: row.get("commits_90d")?,
+        commits_total: row.get("commits_total")?,
+        author_count: row.get("author_count")?,
+        dirty_modified: row.get("dirty_modified")?,
+        dirty_staged: row.get("dirty_staged")?,
+        dirty_untracked: row.get("dirty_untracked")?,
+        ahead: row.get("ahead")?,
+        behind: row.get("behind")?,
+        remote_url: row.get("remote_url")?,
+        branch_count: row.get("branch_count")?,
+        has_stash: row.get::<_, Option<i64>>("has_stash")?.map(|v| v != 0),
+        last_scanned_at: row.get("last_scanned_at")?,
+    })
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct RepoDetail {
+    pub repo: RepoRecord,
+    pub languages: Vec<LanguageStat>,
+    /// Submodule children (FR-1.5) — shown here, never in the main list.
+    pub submodules: Vec<RepoRecord>,
+}
+
+/// Full detail for one repo: its record, language breakdown, and any
+/// submodule children.
+pub fn get_repo_detail(conn: &Connection, id: i64) -> CoreResult<Option<RepoDetail>> {
+    let repo = conn
+        .query_row("SELECT * FROM repos WHERE id = ?1", [id], row_to_record)
+        .optional()?;
+    let Some(repo) = repo else { return Ok(None) };
+
+    let mut lang_stmt = conn.prepare(
+        "SELECT language, code_lines, comment_lines, files, percentage
+           FROM repo_languages WHERE repo_id = ?1 ORDER BY percentage DESC",
+    )?;
+    let languages = lang_stmt
+        .query_map([id], |r| {
+            Ok(LanguageStat {
+                language: r.get("language")?,
+                code_lines: r.get::<_, i64>("code_lines")? as u64,
+                comment_lines: r.get::<_, i64>("comment_lines")? as u64,
+                files: r.get::<_, i64>("files")? as u64,
+                percentage: r.get::<_, f64>("percentage")? as f32,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+
+    let mut sub_stmt =
+        conn.prepare("SELECT * FROM repos WHERE parent_repo_id = ?1 ORDER BY name")?;
+    let submodules = sub_stmt
+        .query_map([id], row_to_record)?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+
+    Ok(Some(RepoDetail {
+        repo,
+        languages,
+        submodules,
+    }))
 }
 
 #[cfg(test)]

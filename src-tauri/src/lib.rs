@@ -6,6 +6,7 @@ mod commands;
 mod error;
 mod events;
 mod logging;
+mod scan_reporter;
 mod settings;
 mod state;
 
@@ -40,6 +41,10 @@ pub(crate) fn specta_builder() -> Builder<tauri::Wry> {
             commands::settings::list_scan_roots,
             commands::settings::add_scan_root,
             commands::settings::remove_scan_root,
+            commands::repos::scan_start,
+            commands::repos::scan_cancel,
+            commands::repos::list_repos,
+            commands::repos::get_repo_detail,
         ])
         .events(collect_events![
             events::ScanProgress,

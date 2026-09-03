@@ -11,7 +11,9 @@
 pub mod discovery;
 pub mod git;
 pub mod languages;
+pub mod pipeline;
 pub mod progress;
+pub mod submodule;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;

@@ -28,6 +28,33 @@ export const commands = {
 	addScanRoot: (path: string) => typedError<ScanRoot, CommandError>(__TAURI_INVOKE("add_scan_root", { path })),
 	/**  Remove a scan root and everything derived from it (FK cascade). */
 	removeScanRoot: (id: number) => typedError<null, CommandError>(__TAURI_INVOKE("remove_scan_root", { id })),
+	/**
+	 *  Start a scan of every enabled scan root. Returns the scan id immediately;
+	 *  the walk, analysis, and persistence run on a background thread and report
+	 *  through `scan:*` events (DESIGN §12.1).
+	 */
+	scanStart: () => typedError<number, CommandError>(__TAURI_INVOKE("scan_start")),
+	/**
+	 *  Signal the running scan to stop. Already-persisted repos remain; the scan
+	 *  row ends up `cancelled` (FR-1.9). A no-op if `scan_id` is not the scan in
+	 *  flight.
+	 */
+	scanCancel: (scanId: number) => typedError<null, CommandError>(__TAURI_INVOKE("scan_cancel", { scanId })),
+	/**
+	 *  List repositories, filtered and sorted **in SQL** per `filter`
+	 *  (DESIGN §12.1).
+	 */
+	listRepos: (filter: RepoFilter) => typedError<RepoListItem[], CommandError>(__TAURI_INVOKE("list_repos", { filter })),
+	/**
+	 *  Full detail for one repository: its record, language breakdown, and
+	 *  submodule children.
+	 */
+	getRepoDetail: (id: number) => typedError<{
+	repo: RepoRecord,
+	languages: LanguageStat[],
+	/**  Submodule children (FR-1.5) — shown here, never in the main list. */
+	submodules: RepoRecord[],
+} | null, CommandError>(__TAURI_INVOKE("get_repo_detail", { id })),
 };
 
 /** Events */
@@ -51,6 +78,19 @@ export type CommandError =
 { tier: "internal"; message: string };
 
 /**
+ *  Per-language aggregate for a repo (FR-2.1). Never a file list — memory
+ *  stays bounded (DESIGN §17).
+ */
+export type LanguageStat = {
+	language: string,
+	code_lines: number,
+	comment_lines: number,
+	files: number,
+	/**  Share of total code lines, 0..=100. */
+	percentage: number | null,
+};
+
+/**
  *  Round-trips a value through the Rust↔TS boundary. Exists to prove the
  *  binding pipeline end to end (M0-5): change this struct in Rust and the
  *  generated `bindings.ts` must change with no hand-editing.
@@ -61,10 +101,76 @@ export type Pong = {
 	pid: number,
 };
 
+export type RepoDetail = {
+	repo: RepoRecord,
+	languages: LanguageStat[],
+	/**  Submodule children (FR-1.5) — shown here, never in the main list. */
+	submodules: RepoRecord[],
+};
+
+/**
+ *  Typed filter for `list_repos`. A struct rather than loose query params so
+ *  the whole query — filtering *and* sorting — executes in SQLite and the
+ *  client never receives rows it will just hide (DESIGN §12.1).
+ */
+export type RepoFilter = {
+	/**  Free-text match against name and path (case-insensitive substring). */
+	search?: string | null,
+	/**  Only repos whose primary language equals this. */
+	language?: string | null,
+	/**  Only repos with a dirty working tree. */
+	dirtyOnly?: boolean,
+	/**  Include bare repos (default: included). */
+	includeBare?: boolean,
+	sort?: RepoSort,
+	descending?: boolean,
+};
+
+/**  Compact per-repo row for lists and the scan reporter. */
+export type RepoListItem = {
+	id: number,
+	name: string,
+	path: string,
+	isBare: boolean,
+	branch: string | null,
+	lastCommitAt: string | null,
+	dirty: boolean,
+	primaryLanguage: string | null,
+};
+
+/**  Full git columns for one repo, for the detail view. */
+export type RepoRecord = {
+	id: number,
+	name: string,
+	path: string,
+	isBare: boolean,
+	isMonorepo: boolean,
+	parentRepoId: number | null,
+	headSha: string | null,
+	branch: string | null,
+	lastCommitAt: string | null,
+	lastCommitSummary: string | null,
+	commits90d: number | null,
+	commitsTotal: number | null,
+	authorCount: number | null,
+	dirtyModified: number | null,
+	dirtyStaged: number | null,
+	dirtyUntracked: number | null,
+	ahead: number | null,
+	behind: number | null,
+	remoteUrl: string | null,
+	branchCount: number | null,
+	hasStash: boolean | null,
+	lastScannedAt: string | null,
+};
+
+/**  Sort key for the repo list. Sorting happens in SQL (DESIGN §12.1). */
+export type RepoSort = "name" | "last_commit" | "primary_language";
+
 /**  `scan:complete`. */
 export type ScanComplete = {
-	scan_id: number,
-	repos_scanned: number,
+	scanId: number,
+	reposScanned: number,
 	warnings: number,
 	cancelled: boolean,
 };
@@ -76,7 +182,7 @@ export type ScanError = {
 
 /**  `scan:progress` — drives the global progress bar. */
 export type ScanProgress = {
-	scan_id: number,
+	scanId: number,
 	discovered: number,
 	completed: number,
 };
@@ -86,11 +192,11 @@ export type ScanProgress = {
  *  `['repo', id]` (DESIGN §14.1), populating the list incrementally.
  */
 export type ScanRepoDone = {
-	scan_id: number,
-	repo_id: number,
+	scanId: number,
+	repoId: number,
 	name: string,
 	path: string,
-	warning_count: number,
+	warningCount: number,
 };
 
 /**  A configured scan root (FR-10.1). `id` is the SQLite rowid. */
@@ -104,7 +210,7 @@ export type ScanRoot = {
 
 /**  `scan:warning` — a recoverable problem, surfaced as it occurs. */
 export type ScanWarning = {
-	scan_id: number,
+	scanId: number,
 	warning: Warning,
 };
 
