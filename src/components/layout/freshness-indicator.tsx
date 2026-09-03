@@ -1,41 +1,56 @@
-import { ShieldCheck } from "lucide-react";
+import { ShieldAlert, ShieldCheck, ShieldQuestion } from "lucide-react";
+import { Link } from "react-router-dom";
 
 import { cn } from "@/lib/utils";
-
-type FreshnessState = "never" | "fresh" | "stale" | "very-stale";
-
-const LABELS: Record<FreshnessState, string> = {
-  never: "Advisories not synced",
-  fresh: "Advisories up to date",
-  stale: "Advisories >7 days old",
-  "very-stale": "Advisories >30 days old",
-};
+import { useSyncStatus } from "@/features/advisories/use-sync";
 
 /**
- * Persistent slot for advisory-database freshness, visible from every route
- * (DESIGN §14.3, FR-5.6). Escalates past 7 and 30 days; "never synced" is
- * its own state — health is *unknown*, not healthy (DESIGN §14.4). Wired to
- * `get_sync_status` in **M2-20**; until then it reflects the only real
- * state: nothing has been synced.
+ * Advisory-database freshness, visible from every route (DESIGN §14.3,
+ * FR-5.6). Escalates past 7 and 30 days; "never synced" is its own state —
+ * health is *unknown*, not healthy (DESIGN §14.4, M2-22).
  */
-export function FreshnessIndicator({
-  state = "never",
-}: {
-  state?: FreshnessState;
-}) {
+export function FreshnessIndicator() {
+  const status = useSyncStatus();
+  const freshness = status.data?.freshness ?? "never";
+
+  const meta = {
+    never: { label: "Advisories not synced", cls: "text-unknown", Icon: ShieldQuestion },
+    fresh: { label: "Advisories up to date", cls: "text-ok", Icon: ShieldCheck },
+    stale: { label: "Advisories >7 days old", cls: "text-warn", Icon: ShieldAlert },
+    "very-stale": {
+      label: "Advisories >30 days old",
+      cls: "text-vulnerability",
+      Icon: ShieldAlert,
+    },
+  }[normalize(freshness)];
+
   return (
-    <div
+    <Link
+      to="/advisories"
       className={cn(
-        "flex items-center gap-2 rounded-md px-2 py-1 text-xs",
-        state === "never" && "text-unknown",
-        state === "fresh" && "text-ok",
-        state === "stale" && "text-warn",
-        state === "very-stale" && "text-vulnerability",
+        "flex items-center gap-2 rounded-md px-2 py-1 text-xs hover:bg-accent",
+        meta.cls,
       )}
-      title={LABELS[state]}
+      title={meta.label}
     >
-      <ShieldCheck className="size-3.5" />
-      <span className="hidden sm:inline">{LABELS[state]}</span>
-    </div>
+      <meta.Icon className="size-3.5" />
+      <span className="hidden sm:inline">{meta.label}</span>
+    </Link>
   );
+}
+
+function normalize(f: string): "never" | "fresh" | "stale" | "very-stale" {
+  switch (f) {
+    case "Never":
+    case "never":
+      return "never";
+    case "Fresh":
+    case "fresh":
+      return "fresh";
+    case "Stale":
+    case "stale":
+      return "stale";
+    default:
+      return "very-stale";
+  }
 }

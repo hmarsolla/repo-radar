@@ -7,11 +7,13 @@
 //! Full sync writes land in [`crate::osv::sync`].
 
 use rusqlite::Connection;
+use serde::{Deserialize, Serialize};
+use specta::Type;
 
 use crate::error::CoreResult;
-use crate::model::{Confidence, Ecosystem, FindingKind, Scope, Severity};
+use crate::model::{Confidence, Ecosystem, FindingKind, Freshness, Scope, Severity};
 use crate::osv::matcher::Candidate;
-use crate::osv::record::{parse_events_json, NormalizedAffected, NormalizedRange, RangeType};
+use crate::osv::record::{parse_events_json, MalCoverage, NormalizedAffected, NormalizedRange, RangeType};
 
 /// A repo dependency row as the matcher needs it.
 #[derive(Debug, Clone)]
@@ -196,6 +198,114 @@ pub fn counts_by_ecosystem(conn: &Connection) -> CoreResult<Vec<(String, i64, i6
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(rows)
+}
+
+// ---------------------------------------------------------------------------
+// Sync status (FR-5.6, M2-20 / M2-22)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncStatus {
+    /// RFC 3339 time of the most recent `complete` sync, any ecosystem.
+    pub last_success: Option<String>,
+    /// `false` on a fresh install — health is *unknown*, not healthy
+    /// (DESIGN §14.4, M2-22).
+    pub ever_synced: bool,
+    pub advisory_count: i64,
+    pub freshness: Freshness,
+    /// The most recent sync error, if the last attempt failed.
+    pub last_error: Option<String>,
+    pub ecosystems: Vec<EcosystemStatus>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct EcosystemStatus {
+    pub ecosystem: String,
+    pub advisory_count: i64,
+    pub compromise_count: i64,
+    pub last_success: Option<String>,
+    /// `Thin` for crates.io and Go — the UI must caveat a clean result
+    /// there (spike §8.2.1, D1).
+    pub mal_coverage: MalCoverage,
+}
+
+pub fn sync_status(conn: &Connection) -> CoreResult<SyncStatus> {
+    let advisory_count = advisory_count(conn)?;
+    let last_success: Option<String> = conn
+        .query_row(
+            "SELECT MAX(finished_at) FROM sync_log WHERE status = 'complete'",
+            [],
+            |r| r.get(0),
+        )
+        .ok()
+        .flatten();
+    let last_error: Option<String> = conn
+        .query_row(
+            "SELECT error FROM sync_log
+              WHERE status = 'failed'
+                AND started_at > COALESCE((SELECT MAX(finished_at) FROM sync_log WHERE status='complete'), '')
+              ORDER BY started_at DESC LIMIT 1",
+            [],
+            |r| r.get(0),
+        )
+        .ok()
+        .flatten();
+
+    let freshness = match last_success.as_deref().and_then(parse_rfc3339) {
+        None => Freshness::Never,
+        Some(t) => {
+            let age = chrono::Utc::now() - t;
+            if age > chrono::Duration::days(30) {
+                Freshness::VeryStale
+            } else if age > chrono::Duration::days(7) {
+                Freshness::Stale
+            } else {
+                Freshness::Fresh
+            }
+        }
+    };
+
+    let counts = counts_by_ecosystem(conn)?;
+    let mut ecosystems = Vec::new();
+    for (eco_s, total, mal) in counts {
+        let Some(eco) = Ecosystem::from_osv_id(&eco_s) else {
+            continue;
+        };
+        let eco_last: Option<String> = conn
+            .query_row(
+                "SELECT MAX(finished_at) FROM sync_log
+                  WHERE ecosystem = ?1 AND status = 'complete'",
+                [eco_s.as_str()],
+                |r| r.get(0),
+            )
+            .ok()
+            .flatten();
+        ecosystems.push(EcosystemStatus {
+            ecosystem: eco_s,
+            advisory_count: total,
+            compromise_count: mal,
+            last_success: eco_last,
+            mal_coverage: MalCoverage::for_ecosystem(eco),
+        });
+    }
+    ecosystems.sort_by(|a, b| a.ecosystem.cmp(&b.ecosystem));
+
+    Ok(SyncStatus {
+        last_success,
+        ever_synced: advisory_count > 0,
+        advisory_count,
+        freshness,
+        last_error,
+        ecosystems,
+    })
+}
+
+fn parse_rfc3339(s: &str) -> Option<chrono::DateTime<chrono::Utc>> {
+    chrono::DateTime::parse_from_rfc3339(s.trim())
+        .ok()
+        .map(|d| d.with_timezone(&chrono::Utc))
 }
 
 // -- string <-> enum helpers (DB stores lowercase strings) -----------------

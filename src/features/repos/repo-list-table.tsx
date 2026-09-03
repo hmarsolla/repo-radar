@@ -7,7 +7,7 @@ import {
   type ColumnDef,
 } from "@tanstack/react-table";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { GitBranch, CircleDot } from "lucide-react";
+import { AlertOctagon, CircleDot } from "lucide-react";
 
 import type { RepoListItem } from "@/bindings";
 import { cn } from "@/lib/utils";
@@ -25,6 +25,15 @@ function relativeTime(iso: string | null): string {
   return `${Math.round(diff / (365 * day))}y ago`;
 }
 
+const BAND_TONE: Record<string, string> = {
+  unknown: "bg-unknown/15 text-unknown",
+  critical: "bg-compromise/15 text-compromise",
+  poor: "bg-vulnerability/15 text-vulnerability",
+  fair: "bg-warn/15 text-warn",
+  good: "bg-ok/15 text-ok",
+  excellent: "bg-ok/15 text-ok",
+};
+
 const columns: ColumnDef<RepoListItem>[] = [
   {
     accessorKey: "name",
@@ -39,6 +48,53 @@ const columns: ColumnDef<RepoListItem>[] = [
     ),
   },
   {
+    id: "health",
+    header: "Health",
+    cell: ({ row }) => {
+      const band = row.original.healthBand ?? "unknown";
+      const score = row.original.healthScore;
+      return (
+        <span
+          className={cn(
+            "inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs capitalize",
+            BAND_TONE[band],
+          )}
+          title={band === "unknown" ? "Not checked — advisories not synced" : undefined}
+        >
+          {band === "unknown" ? "unknown" : (score ?? "—")}
+        </span>
+      );
+    },
+  },
+  {
+    id: "compromise",
+    header: "Compromise",
+    cell: ({ row }) =>
+      row.original.compromiseCount > 0 ? (
+        <span
+          className="inline-flex items-center gap-1 rounded bg-compromise/15 px-1.5 py-0.5 text-xs font-medium text-compromise"
+          title="Confirmed malicious / backdoored packages"
+        >
+          <AlertOctagon className="size-3.5" />
+          {row.original.compromiseCount}
+        </span>
+      ) : (
+        <span className="text-xs text-muted-foreground">0</span>
+      ),
+  },
+  {
+    id: "vulnerability",
+    header: "Vulns",
+    cell: ({ row }) =>
+      row.original.vulnerabilityCount > 0 ? (
+        <span className="inline-flex items-center gap-1 rounded bg-vulnerability/15 px-1.5 py-0.5 text-xs font-medium text-vulnerability">
+          {row.original.vulnerabilityCount}
+        </span>
+      ) : (
+        <span className="text-xs text-muted-foreground">0</span>
+      ),
+  },
+  {
     accessorKey: "primaryLanguage",
     header: "Language",
     cell: ({ getValue }) => (
@@ -46,19 +102,6 @@ const columns: ColumnDef<RepoListItem>[] = [
         {(getValue() as string | null) ?? "—"}
       </span>
     ),
-  },
-  {
-    accessorKey: "branch",
-    header: "Branch",
-    cell: ({ getValue, row }) =>
-      row.original.isBare ? (
-        <span className="text-xs text-muted-foreground">bare</span>
-      ) : (
-        <span className="inline-flex items-center gap-1 text-sm text-muted-foreground">
-          <GitBranch className="size-3.5" />
-          {(getValue() as string | null) ?? "detached"}
-        </span>
-      ),
   },
   {
     accessorKey: "lastCommitAt",
@@ -104,7 +147,8 @@ export function RepoListTable({ repos }: { repos: RepoListItem[] }) {
   });
 
   const gridCols = useMemo(
-    () => "minmax(16rem,1fr) 8rem 10rem 8rem 5rem",
+    // name · health · compromise · vulns · language · last commit · dirty
+    () => "minmax(14rem,1fr) 5rem 6rem 4rem 7rem 8rem 5rem",
     [],
   );
 

@@ -60,6 +60,55 @@ impl SyncReporter for NoopSyncReporter {
     fn phase(&self, _: Ecosystem, _: &str, _: usize, _: usize) {}
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type)]
+#[serde(rename_all = "lowercase")]
+pub enum SyncMode {
+    Full,
+    Incremental,
+}
+
+/// Run a sync with retry. Exponential backoff with jitter, capped at 5
+/// attempts (DESIGN §8.6); after that the failure is returned for the
+/// caller to log and surface (FR-5.5).
+pub fn sync_with_retry(
+    db: &Db,
+    mode: SyncMode,
+    opts: &SyncOptions,
+    reporter: &dyn SyncReporter,
+) -> Result<SyncSummary, OperationError> {
+    const MAX_ATTEMPTS: u32 = 5;
+    let mut attempt = 0;
+    loop {
+        attempt += 1;
+        let result = match mode {
+            SyncMode::Full => full_sync(db, opts, reporter),
+            SyncMode::Incremental => incremental_sync(db, opts, reporter),
+        };
+        match result {
+            Ok(s) => return Ok(s),
+            // A per-record data problem is not worth retrying.
+            Err(OperationError::Sync(_)) if attempt >= MAX_ATTEMPTS => return result,
+            Err(_) if attempt >= MAX_ATTEMPTS => return result,
+            Err(e) => {
+                let base = 2u64.saturating_pow(attempt).min(60);
+                let jitter = pseudo_jitter_ms(attempt);
+                let wait = std::time::Duration::from_millis(base * 1000 + jitter);
+                tracing::warn!(attempt, ?wait, error = %e, "sync failed; backing off");
+                std::thread::sleep(wait);
+            }
+        }
+    }
+}
+
+fn pseudo_jitter_ms(seed: u32) -> u64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.subsec_nanos() as u64)
+        .unwrap_or(0);
+    (now ^ (seed as u64).wrapping_mul(2654435761)) % 1000
+}
+
 /// Full sync of every ecosystem in `opts.ecosystems`.
 pub fn full_sync(
     db: &Db,
@@ -86,6 +135,192 @@ pub fn full_sync(
         summary.per_ecosystem.push((eco, count));
     }
     Ok(summary)
+}
+
+/// Above this many changed IDs, an incremental sync abandons the per-record
+/// fetch and falls back to a full zip download (DESIGN §8.6).
+const INCREMENTAL_FALLBACK_THRESHOLD: usize = 2000;
+/// Bounded concurrency for per-record fetches (DESIGN §8.6).
+const FETCH_CONCURRENCY: usize = 8;
+
+/// Incremental sync: for each ecosystem, read `modified_id.csv` (newest
+/// first) down to the last successful sync, fetch just those advisories, and
+/// upsert them. Falls back to a full sync when there is no prior sync or the
+/// delta is too large.
+pub fn incremental_sync(
+    db: &Db,
+    opts: &SyncOptions,
+    reporter: &dyn SyncReporter,
+) -> Result<SyncSummary, OperationError> {
+    std::fs::create_dir_all(&opts.cache_dir).ok();
+    let client = reqwest::blocking::Client::builder()
+        .user_agent(USER_AGENT)
+        .build()
+        .map_err(|e| OperationError::Network(e.to_string()))?;
+
+    let mut summary = SyncSummary::default();
+    for &eco in &opts.ecosystems {
+        let count = incremental_one(db, &client, eco, &opts.cache_dir, reporter).inspect_err(
+            |e| {
+                let _ = db.write(|c| {
+                    log_sync(c, eco, "incremental", None, "failed", Some(&e.to_string()))
+                });
+            },
+        )?;
+        summary.per_ecosystem.push((eco, count));
+    }
+    Ok(summary)
+}
+
+fn incremental_one(
+    db: &Db,
+    client: &reqwest::blocking::Client,
+    eco: Ecosystem,
+    cache_dir: &Path,
+    reporter: &dyn SyncReporter,
+) -> Result<usize, OperationError> {
+    let last = last_successful_sync(db, eco).map_err(|e| OperationError::Sync(e.to_string()))?;
+    let Some(since) = last else {
+        // Never synced this ecosystem — a full sync is the only option.
+        return sync_one_ecosystem(db, client, eco, cache_dir, reporter);
+    };
+
+    reporter.phase(eco, "delta", 0, 0);
+    let csv_url = format!("{BUCKET}/{}/modified_id.csv", eco.osv_id());
+    let body = client
+        .get(&csv_url)
+        .send()
+        .and_then(|r| r.error_for_status())
+        .and_then(|r| r.text())
+        .map_err(|e| OperationError::Network(format!("{csv_url}: {e}")))?;
+
+    let mut changed: Vec<String> = Vec::new();
+    for line in body.lines() {
+        let mut cols = line.splitn(2, ',');
+        let (Some(ts), Some(id)) = (cols.next(), cols.next()) else {
+            continue;
+        };
+        match chrono::DateTime::parse_from_rfc3339(ts.trim()) {
+            Ok(t) if t.with_timezone(&chrono::Utc) > since => changed.push(id.trim().to_string()),
+            Ok(_) => break, // reached entries at/older than our last sync
+            Err(_) => continue,
+        }
+    }
+
+    if changed.is_empty() {
+        db.write(|c| log_sync(c, eco, "incremental", Some(0), "complete", None))
+            .map_err(|e| OperationError::Sync(e.to_string()))?;
+        return Ok(0);
+    }
+    if changed.len() > INCREMENTAL_FALLBACK_THRESHOLD {
+        tracing::info!(
+            ecosystem = eco.osv_id(),
+            delta = changed.len(),
+            "incremental delta over threshold; falling back to full sync"
+        );
+        return sync_one_ecosystem(db, client, eco, cache_dir, reporter);
+    }
+
+    // Fetch the changed advisories with bounded concurrency.
+    reporter.phase(eco, "fetch", 0, changed.len());
+    let fetched = std::sync::Mutex::new(Vec::<OsvRecord>::new());
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    std::thread::scope(|scope| {
+        for _ in 0..FETCH_CONCURRENCY.min(changed.len()) {
+            scope.spawn(|| loop {
+                let i = next.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let Some(id) = changed.get(i) else { break };
+                let url = format!("{BUCKET}/{}/{}.json", eco.osv_id(), id);
+                if let Ok(rec) = client
+                    .get(&url)
+                    .send()
+                    .and_then(|r| r.error_for_status())
+                    .and_then(|r| r.json::<OsvRecord>())
+                {
+                    fetched.lock().unwrap().push(rec);
+                }
+            });
+        }
+    });
+    let records = fetched.into_inner().unwrap();
+
+    reporter.phase(eco, "ingest", 0, records.len());
+    let written = db
+        .write(|conn| {
+            let tx = conn.transaction()?;
+            let mut n = 0usize;
+            for record in &records {
+                let Some((advisory, affected)) = normalize(record) else {
+                    continue;
+                };
+                let relevant: Vec<_> =
+                    affected.into_iter().filter(|a| a.ecosystem == eco).collect();
+                // Replace this advisory's rows for this ecosystem.
+                tx.execute(
+                    "DELETE FROM affected_ranges WHERE advisory_id = ?1 AND ecosystem = ?2",
+                    rusqlite::params![advisory.id, eco.osv_id()],
+                )?;
+                tx.execute(
+                    "DELETE FROM affected_versions WHERE advisory_id = ?1 AND ecosystem = ?2",
+                    rusqlite::params![advisory.id, eco.osv_id()],
+                )?;
+                if relevant.is_empty() && record.withdrawn.is_none() {
+                    // No longer affects this ecosystem — drop the advisory if
+                    // nothing else references it.
+                    tx.execute(
+                        "DELETE FROM advisories WHERE id = ?1
+                         AND NOT EXISTS (SELECT 1 FROM affected_ranges WHERE advisory_id = ?1)
+                         AND NOT EXISTS (SELECT 1 FROM affected_versions WHERE advisory_id = ?1)",
+                        [&advisory.id],
+                    )?;
+                    continue;
+                }
+                upsert_advisory(&tx, &advisory)?;
+                for a in &relevant {
+                    for range in &a.ranges {
+                        insert_range(&tx, &advisory.id, eco.osv_id(), &a.package_name, range)?;
+                    }
+                    for v in &a.versions {
+                        tx.execute(
+                            "INSERT OR IGNORE INTO affected_versions
+                                (advisory_id, ecosystem, package_name, version)
+                             VALUES (?1, ?2, ?3, ?4)",
+                            rusqlite::params![advisory.id, eco.osv_id(), a.package_name, v],
+                        )?;
+                    }
+                }
+                n += 1;
+            }
+            tx.commit()?;
+            Ok(n)
+        })
+        .map_err(|e| OperationError::Sync(e.to_string()))?;
+
+    db.write(|c| log_sync(c, eco, "incremental", Some(written), "complete", None))
+        .map_err(|e| OperationError::Sync(e.to_string()))?;
+    reporter.phase(eco, "done", written, written);
+    Ok(written)
+}
+
+/// The most recent `complete` sync time for `eco`, from `sync_log`.
+fn last_successful_sync(
+    db: &Db,
+    eco: Ecosystem,
+) -> CoreResult<Option<chrono::DateTime<chrono::Utc>>> {
+    let conn = db.read()?;
+    let raw: Option<String> = conn
+        .query_row(
+            "SELECT MAX(finished_at) FROM sync_log
+              WHERE ecosystem = ?1 AND status = 'complete'",
+            [eco.osv_id()],
+            |r| r.get(0),
+        )
+        .ok()
+        .flatten();
+    Ok(raw
+        .as_deref()
+        .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+        .map(|d| d.with_timezone(&chrono::Utc)))
 }
 
 fn sync_one_ecosystem(
@@ -325,6 +560,41 @@ fn sanitize(s: &str) -> String {
     s.chars()
         .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
         .collect()
+}
+
+/// FR-5.9 live query — the **one** exception to "nothing about the user's
+/// code is transmitted": this sends a single package name + version to
+/// `api.osv.dev`. It is opt-in, per-dependency, and **never** called from a
+/// scan or any automatic path. Returns the matching advisory IDs.
+pub fn live_query(
+    ecosystem: Ecosystem,
+    name: &str,
+    version: &str,
+) -> Result<Vec<String>, OperationError> {
+    let client = reqwest::blocking::Client::builder()
+        .user_agent(USER_AGENT)
+        .build()
+        .map_err(|e| OperationError::Network(e.to_string()))?;
+    let body = serde_json::json!({
+        "version": version,
+        "package": { "name": name, "ecosystem": ecosystem.osv_id() }
+    });
+    let resp: serde_json::Value = client
+        .post("https://api.osv.dev/v1/query")
+        .json(&body)
+        .send()
+        .and_then(|r| r.error_for_status())
+        .and_then(|r| r.json())
+        .map_err(|e| OperationError::Network(format!("api.osv.dev/v1/query: {e}")))?;
+    Ok(resp
+        .get("vulns")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.get("id").and_then(|id| id.as_str()).map(String::from))
+                .collect()
+        })
+        .unwrap_or_default())
 }
 
 /// Which ecosystems currently have at least one dependency in the database —

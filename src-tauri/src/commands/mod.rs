@@ -2,6 +2,7 @@
 //! command returns `Result<T, CommandError>` and does its real work in
 //! `repo-radar-core`; this layer only adapts types and owns state.
 
+pub mod advisories;
 pub mod repos;
 pub mod settings;
 pub mod system;

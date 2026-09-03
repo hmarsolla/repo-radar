@@ -45,6 +45,10 @@ pub(crate) fn specta_builder() -> Builder<tauri::Wry> {
             commands::repos::scan_cancel,
             commands::repos::list_repos,
             commands::repos::get_repo_detail,
+            commands::advisories::sync_advisories,
+            commands::advisories::get_sync_status,
+            commands::advisories::list_advisory_impact,
+            commands::advisories::live_query,
         ])
         .events(collect_events![
             events::ScanProgress,
@@ -105,6 +109,9 @@ pub fn run() {
                 e
             })?;
             app.manage(AppState::new(core));
+
+            // Scheduled advisory sync (DESIGN §13.2, M2-15).
+            commands::advisories::spawn_scheduler(app.handle().clone());
 
             Ok(())
         })

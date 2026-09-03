@@ -330,13 +330,26 @@ pub struct RepoListItem {
     pub last_commit_at: Option<String>,
     pub dirty: bool,
     pub primary_language: Option<String>,
+    pub health_score: Option<i64>,
+    /// `unknown` / `critical` / `poor` / `fair` / `good` / `excellent`.
+    pub health_band: Option<String>,
+    /// Confirmed compromise findings and ordinary vulnerabilities are kept
+    /// in **separate columns** (FR-6.1, M2-23) — a combined "issues" count
+    /// would destroy the distinction the health model exists to make.
+    pub compromise_count: i64,
+    pub vulnerability_count: i64,
 }
 
 const REPO_LIST_SELECT: &str = "
     SELECT r.id, r.name, r.path, r.is_bare, r.branch, r.last_commit_at,
+           r.health_score AS health_score, r.health_band AS health_band,
            COALESCE(r.dirty_modified,0)+COALESCE(r.dirty_staged,0)+COALESCE(r.dirty_untracked,0) AS dirt,
            (SELECT language FROM repo_languages l
-             WHERE l.repo_id = r.id ORDER BY l.percentage DESC LIMIT 1) AS primary_language
+             WHERE l.repo_id = r.id ORDER BY l.percentage DESC LIMIT 1) AS primary_language,
+           (SELECT COUNT(*) FROM findings f
+             WHERE f.repo_id = r.id AND f.kind = 'compromise' AND f.suppressed = 0) AS compromise_count,
+           (SELECT COUNT(*) FROM findings f
+             WHERE f.repo_id = r.id AND f.kind = 'vulnerability' AND f.suppressed = 0) AS vulnerability_count
       FROM repos r";
 
 fn row_to_list_item(row: &rusqlite::Row<'_>) -> rusqlite::Result<RepoListItem> {
@@ -349,6 +362,10 @@ fn row_to_list_item(row: &rusqlite::Row<'_>) -> rusqlite::Result<RepoListItem> {
         last_commit_at: row.get("last_commit_at")?,
         dirty: row.get::<_, i64>("dirt")? != 0,
         primary_language: row.get("primary_language")?,
+        health_score: row.get("health_score")?,
+        health_band: row.get("health_band")?,
+        compromise_count: row.get("compromise_count")?,
+        vulnerability_count: row.get("vulnerability_count")?,
     })
 }
 
@@ -473,6 +490,11 @@ pub struct RepoRecord {
     pub branch_count: Option<i64>,
     pub has_stash: Option<bool>,
     pub last_scanned_at: Option<String>,
+
+    // health (FR-6)
+    pub health_score: Option<i64>,
+    pub health_band: Option<String>,
+    pub category: Option<String>,
 }
 
 fn row_to_record(row: &rusqlite::Row<'_>) -> rusqlite::Result<RepoRecord> {
@@ -499,7 +521,27 @@ fn row_to_record(row: &rusqlite::Row<'_>) -> rusqlite::Result<RepoRecord> {
         branch_count: row.get("branch_count")?,
         has_stash: row.get::<_, Option<i64>>("has_stash")?.map(|v| v != 0),
         last_scanned_at: row.get("last_scanned_at")?,
+        health_score: row.get("health_score")?,
+        health_band: row.get("health_band")?,
+        category: row.get("category")?,
     })
+}
+
+/// One finding for the Health tab (FR-6.9). Rendered from the stored data —
+/// the UI never recomputes a score.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct FindingDetail {
+    pub advisory_id: String,
+    /// `compromise` | `vulnerability`.
+    pub kind: String,
+    pub severity: String,
+    pub confidence: String,
+    pub package_name: String,
+    pub package_version: String,
+    pub fixed_version: Option<String>,
+    pub summary: String,
+    pub deduction: f64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
@@ -509,10 +551,15 @@ pub struct RepoDetail {
     pub languages: Vec<LanguageStat>,
     /// Submodule children (FR-1.5) — shown here, never in the main list.
     pub submodules: Vec<RepoRecord>,
+    /// The stored `health_breakdown` JSON, rendered directly by the UI so
+    /// the number shown and the number explained cannot drift (FR-6.9).
+    pub health_breakdown: Option<String>,
+    /// Compromise findings first, then vulnerabilities (FR-6.1).
+    pub findings: Vec<FindingDetail>,
 }
 
-/// Full detail for one repo: its record, language breakdown, and any
-/// submodule children.
+/// Full detail for one repo: its record, language breakdown, submodule
+/// children, and its findings + health breakdown.
 pub fn get_repo_detail(conn: &Connection, id: i64) -> CoreResult<Option<RepoDetail>> {
     let repo = conn
         .query_row("SELECT * FROM repos WHERE id = ?1", [id], row_to_record)
@@ -541,10 +588,46 @@ pub fn get_repo_detail(conn: &Connection, id: i64) -> CoreResult<Option<RepoDeta
         .query_map([id], row_to_record)?
         .collect::<rusqlite::Result<Vec<_>>>()?;
 
+    let health_breakdown: Option<String> = conn
+        .query_row("SELECT health_breakdown FROM repos WHERE id = ?1", [id], |r| {
+            r.get(0)
+        })
+        .optional()?
+        .flatten();
+
+    // Compromise findings first (FR-6.1), then by deduction descending.
+    let mut fstmt = conn.prepare(
+        "SELECT f.advisory_id, f.kind, f.confidence, f.fixed_version, f.deduction,
+                d.name AS pkg, d.version AS ver,
+                a.severity AS severity, a.summary AS summary
+           FROM findings f
+           JOIN dependencies d ON d.id = f.dependency_id
+           JOIN advisories a ON a.id = f.advisory_id
+          WHERE f.repo_id = ?1 AND f.suppressed = 0
+          ORDER BY (f.kind = 'compromise') DESC, f.deduction DESC, a.severity DESC",
+    )?;
+    let findings = fstmt
+        .query_map([id], |r| {
+            Ok(FindingDetail {
+                advisory_id: r.get("advisory_id")?,
+                kind: r.get("kind")?,
+                confidence: r.get("confidence")?,
+                fixed_version: r.get("fixed_version")?,
+                deduction: r.get("deduction")?,
+                package_name: r.get("pkg")?,
+                package_version: r.get("ver")?,
+                severity: r.get("severity")?,
+                summary: r.get::<_, Option<String>>("summary")?.unwrap_or_default(),
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+
     Ok(Some(RepoDetail {
         repo,
         languages,
         submodules,
+        health_breakdown,
+        findings,
     }))
 }
 
