@@ -627,6 +627,55 @@ fn classify(record: &OsvRecord) -> FindingKind {
 
 Per PRD R1, the exact shape of the `database_specific` marker and the per-ecosystem coverage of `MAL-` IDs **must be verified against a live snapshot during M2 before UI is built on top of it.** `has_malicious_marker` is deliberately isolated as one small function so that verification changes one place. If an ecosystem turns out to have thin `MAL-` coverage, the UI must say so for that ecosystem rather than implying a clean bill of health.
 
+#### 8.2.1 M2-12 spike findings (verified against a live OSV snapshot, 2026-09-02)
+
+Enumerated every object in `gs://osv-vulnerabilities/{ecosystem}/` and fetched
+a sample of `MAL-` records per ecosystem.
+
+**Record shape — consistent across all four ecosystems.** A `MAL-` record has:
+
+- `id` of the form `MAL-YYYY-NNNN` — always. This alone is a reliable classifier.
+- Top-level `database_specific["malicious-packages-origins"]` — a **non-empty
+  array** on every `MAL-` record. Each entry carries `source` (`ghsa-malware`,
+  `ossf-package-analysis`, `google-open-source-security`, `checkmarx`, …),
+  `sha256`, `import_time`, `modified_time`, and optionally `id`, `ranges`,
+  `versions`. **This is the marker** `has_malicious_marker` checks: the key is
+  present and the array is non-empty.
+- `affected[].package` — **always present and usable**: `{ name, ecosystem,
+  purl }`. The name maps straight onto a normalized dependency name.
+- Version spec in one of two forms (sometimes both on one record):
+  - `affected[].ranges` = `[{ type: SEMVER|ECOSYSTEM, events: [{introduced:"0"}] }]`
+    — "every version affected", no `fixed`. Typical for typosquats / removed packages.
+  - `affected[].versions` = `["1.0.0"]` — explicit single version. Typical for
+    OpenSSF Package Analysis detections. **The `affected[].versions[]` matching
+    path (§8.4) is therefore mandatory for compromise detection, not optional.**
+- `affected[].database_specific.cwes` — sometimes `CWE-506` ("Embedded Malicious
+  Code"), present on GHSA-sourced records, absent on OpenSSF Package Analysis
+  records. A weaker secondary signal; not needed given the `MAL-` prefix + origins array.
+- **No `severity` field** on any `MAL-` record → they band as `Unscored`. Fine:
+  compromise is a health *cap* (§9 step 2), not severity-driven.
+- A few objects are truncated/error bodies (e.g. `PyPI/MAL-2024-1.json`). A
+  `MAL-` record that fails to deserialize is logged and skipped, never fatal.
+
+**Per-ecosystem `MAL-` coverage:**
+
+| Ecosystem | Total OSV records | `MAL-` records | Assessment |
+|-----------|------------------:|---------------:|------------|
+| npm       | ~200,000          | ~192,700       | Comprehensive (dominated by automated OpenSSF/GHSA feeds) |
+| PyPI      | ~25,300           | ~11,700        | Substantial |
+| crates.io | ~2,800            | **19**         | **Thin** — spot reports only, no systematic automated feed |
+| Go        | ~9,100            | **18**         | **Thin** — spot reports only, no systematic automated feed |
+
+**Product decision (D1 outcome).** `classify()` and `has_malicious_marker` as
+written are correct and need no change. But for **crates.io and Go**, "no
+compromise findings" reflects ~18 monitored packages, not a systematic scan.
+The core exposes a per-ecosystem `MalCoverage { Strong | Thin }` value
+(`Thin` for crates.io and Go, `Strong` for npm and PyPI, hard-coded from this
+spike and revisited each release). The Health tab, the Advisories screen, and
+any "no compromises" empty state **must render the `Thin` caveat** for repos
+whose dependencies are crates.io/Go — a clean result there is "we checked the
+few known cases", not "this is clean".
+
 ### 8.3 Severity extraction
 
 Precedence:
@@ -1054,7 +1103,7 @@ The last point deserves emphasis: pointing a tool at arbitrary repositories and 
 
 | # | Question | Blocking | Resolution path |
 |---|----------|----------|-----------------|
-| D1 | Exact shape of the OSV malicious-package marker in `database_specific`, and `MAL-` coverage per ecosystem (PRD R1) | **M2** | Verify against a live snapshot before building UI on it. Isolated to `has_malicious_marker` (§8.2). If an ecosystem's coverage is thin, the UI must say so rather than imply safety. |
+| ~~D1~~ **CLOSED (M2-12)** | Exact shape of the OSV malicious-package marker in `database_specific`, and `MAL-` coverage per ecosystem (PRD R1) | — | **Resolved 2026-09-02** (§8.2.1). Marker = non-empty `database_specific["malicious-packages-origins"]`; `affected[].package` always usable; `versions[]`-only records exist and must be matched. Coverage: npm/PyPI strong, **crates.io (19) and Go (18) thin** — core exposes `MalCoverage {Strong\|Thin}` and the UI must show the `Thin` caveat for those ecosystems. |
 | D2 | Whether `bun.lockb` (binary) is worth supporting | M2 | Deferred. Binary format, no stable parsing story. Bun repos fall back to `package.json` at range confidence. |
 | D3 | Monorepo finding attribution — repo-level rollup vs sub-package scoping (PRD R3) | M2 | Schema supports both (`dependencies.manifest_id`). Default to rollup with drill-down; revisit after using it. |
 | D4 | Whether `affected_ranges.events` should be normalized into rows rather than JSON | M2 | JSON is simpler and the narrow happens on the indexed name columns, so events are only ever read after the join. Revisit only if profiling shows deserialization cost. |
