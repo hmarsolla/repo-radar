@@ -13,3 +13,8 @@ pub mod matcher;
 pub mod record;
 pub mod severity;
 pub mod sync;
+
+pub use record::{
+    classify, has_malicious_marker, normalize, MalCoverage, NormalizedAdvisory, NormalizedAffected,
+    NormalizedRange, OsvRecord, RangeEvent, RangeType,
+};

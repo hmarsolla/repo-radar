@@ -9,8 +9,11 @@
 
 pub mod cargo;
 pub mod golang;
+pub mod normalize;
 pub mod npm;
 pub mod python;
+
+pub use normalize::normalize_package_name;
 
 use std::path::Path;
 

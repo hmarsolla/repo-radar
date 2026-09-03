@@ -22,6 +22,13 @@ r2d2 = "0.8"
 r2d2_sqlite = "0.35"
 blake3 = "1"
 
+# Version schemes (M2-1)
+semver = "1"
+pep440_rs = "0.7"
+
+# OSV ingestion (M2-11)
+cvss = "2"
+
 # Scan pipeline (M1)
 ignore = "0.4"
 # Local-only git access — no https/ssh features, we never fetch over the
