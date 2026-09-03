@@ -7,6 +7,7 @@ import { PageHeader } from "@/components/page-header";
 import { cn } from "@/lib/utils";
 import { commands, unwrap } from "@/lib/ipc";
 import { HealthTab } from "@/features/health/health-tab";
+import { CategorySignals } from "@/features/repos/category-signals";
 
 export function RepoDetailView() {
   const { id } = useParams();
@@ -30,7 +31,7 @@ export function RepoDetailView() {
     );
   }
 
-  const { repo, languages, submodules } = detail.data;
+  const { repo, languages, submodules, technologies } = detail.data;
   const band = repo.healthBand ?? "unknown";
 
   return (
@@ -71,6 +72,42 @@ export function RepoDetailView() {
         <HealthTab detail={detail.data} />
       ) : (
         <div className="grid gap-4 md:grid-cols-2">
+          <div className="md:col-span-2">
+            <CategorySignals repo={repo} />
+          </div>
+
+          <Card title="Technologies">
+            {technologies.length === 0 ? (
+              <p className="text-sm text-muted-foreground">Nothing detected.</p>
+            ) : (
+              <ul className="flex flex-wrap gap-1.5">
+                {technologies.map((t) => {
+                  const confirmed = t.evidence.some((e) => e.startsWith("dependency:"));
+                  return (
+                    <li
+                      key={t.tech}
+                      title={t.evidence.join("\n")}
+                      className={cn(
+                        "rounded-md border px-2 py-1 text-xs",
+                        confirmed
+                          ? "bg-secondary font-medium"
+                          : "border-dashed text-muted-foreground",
+                      )}
+                    >
+                      {t.tech}
+                      <span className="ml-1 text-[10px] uppercase text-muted-foreground/70">
+                        {t.kind}
+                      </span>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+            <p className="mt-2 text-[11px] text-muted-foreground/70">
+              Solid = confirmed by a dependency · dashed = marker file only.
+            </p>
+          </Card>
+
           <Card title="Git">
             {repo.isBare ? (
               <p className="text-sm text-muted-foreground">Bare repository — no working tree.</p>

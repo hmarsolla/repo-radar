@@ -286,6 +286,25 @@ pub fn category_str(c: crate::model::Category) -> &'static str {
     }
 }
 
+/// Parse a wire category string back to the enum. `None` for an
+/// unrecognised value (including `"Unknown"` is accepted).
+pub fn category_from_str(s: &str) -> Option<crate::model::Category> {
+    use crate::model::Category::*;
+    Some(match s {
+        "Frontend" => Frontend,
+        "Backend" => Backend,
+        "Fullstack" => Fullstack,
+        "Mobile" => Mobile,
+        "DevOps" => DevOps,
+        "DataMl" => DataMl,
+        "Library" => Library,
+        "Cli" => Cli,
+        "Docs" => Docs,
+        "Unknown" => Unknown,
+        _ => return None,
+    })
+}
+
 fn confidence_level_str(c: crate::model::ConfidenceLevel) -> &'static str {
     use crate::model::ConfidenceLevel::*;
     match c {
@@ -570,7 +589,17 @@ pub struct RepoRecord {
     // health (FR-6)
     pub health_score: Option<i64>,
     pub health_band: Option<String>,
+
+    // classification (FR-3)
+    /// The *computed* category. Stays visible even when overridden (FR-3.7).
     pub category: Option<String>,
+    /// `low` / `medium` / `high`.
+    pub category_confidence: Option<String>,
+    /// The `category_scores` JSON — the full per-rule / per-category
+    /// breakdown, rendered directly by the explainability UI (FR-3.6).
+    pub category_scores: Option<String>,
+    /// A manual override (FR-3.7); `None` when the computed value stands.
+    pub category_manual: Option<String>,
 }
 
 fn row_to_record(row: &rusqlite::Row<'_>) -> rusqlite::Result<RepoRecord> {
@@ -600,6 +629,9 @@ fn row_to_record(row: &rusqlite::Row<'_>) -> rusqlite::Result<RepoRecord> {
         health_score: row.get("health_score")?,
         health_band: row.get("health_band")?,
         category: row.get("category")?,
+        category_confidence: row.get("category_confidence")?,
+        category_scores: row.get("category_scores")?,
+        category_manual: row.get("category_manual")?,
     })
 }
 
@@ -620,11 +652,24 @@ pub struct FindingDetail {
     pub deduction: f64,
 }
 
+/// One detected technology for the detail view (FR-2.3). `evidence` entries
+/// are prefixed `dependency:` or `file:`; a detection with no `dependency:`
+/// entry renders with lower prominence (FR-2.4).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct TechDetail {
+    pub tech: String,
+    pub kind: String,
+    pub evidence: Vec<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct RepoDetail {
     pub repo: RepoRecord,
     pub languages: Vec<LanguageStat>,
+    /// Detected technologies, dependency-confirmed first (FR-2.3, FR-2.4).
+    pub technologies: Vec<TechDetail>,
     /// Submodule children (FR-1.5) — shown here, never in the main list.
     pub submodules: Vec<RepoRecord>,
     /// The stored `health_breakdown` JSON, rendered directly by the UI so
@@ -654,6 +699,24 @@ pub fn get_repo_detail(conn: &Connection, id: i64) -> CoreResult<Option<RepoDeta
                 comment_lines: r.get::<_, i64>("comment_lines")? as u64,
                 files: r.get::<_, i64>("files")? as u64,
                 percentage: r.get::<_, f64>("percentage")? as f32,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+
+    // Technologies, dependency-confirmed first so the UI can lead with them
+    // (FR-2.4); tiebreak on name for stable ordering.
+    let mut tech_stmt = conn.prepare(
+        "SELECT tech, kind, evidence FROM repo_technologies
+          WHERE repo_id = ?1
+          ORDER BY (evidence LIKE '%\"dependency:%') DESC, tech",
+    )?;
+    let technologies = tech_stmt
+        .query_map([id], |r| {
+            let evidence_json: String = r.get("evidence")?;
+            Ok(TechDetail {
+                tech: r.get("tech")?,
+                kind: r.get("kind")?,
+                evidence: serde_json::from_str(&evidence_json).unwrap_or_default(),
             })
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -703,10 +766,26 @@ pub fn get_repo_detail(conn: &Connection, id: i64) -> CoreResult<Option<RepoDeta
     Ok(Some(RepoDetail {
         repo,
         languages,
+        technologies,
         submodules,
         health_breakdown,
         findings,
     }))
+}
+
+/// Set or clear the manual category override (FR-3.7). `Some(category)`
+/// pins it; `None` reverts to the computed value. The computed `category`
+/// column is never touched — it stays visible beside the override.
+pub fn set_category_manual(
+    conn: &Connection,
+    repo_id: i64,
+    category: Option<crate::model::Category>,
+) -> CoreResult<()> {
+    conn.execute(
+        "UPDATE repos SET category_manual = ?2 WHERE id = ?1",
+        rusqlite::params![repo_id, category.map(category_str)],
+    )?;
+    Ok(())
 }
 
 #[cfg(test)]

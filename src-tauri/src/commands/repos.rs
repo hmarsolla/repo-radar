@@ -5,6 +5,7 @@ use std::sync::Arc;
 use tauri::{AppHandle, Manager, State};
 use tauri_specta::Event as _;
 
+use repo_radar_core::db::dashboard::{self, DashboardStats};
 use repo_radar_core::db::repos::{self as repo_db, RepoDetail, RepoFilter, RepoListItem};
 use repo_radar_core::scan::pipeline::{self, ScanContext, ScanRoot};
 use repo_radar_core::scan::CancelToken;
@@ -108,11 +109,38 @@ pub fn list_repos(
     Ok(repo_db::list_repos(&conn, &filter)?)
 }
 
-/// Full detail for one repository: its record, language breakdown, and
-/// submodule children.
+/// Full detail for one repository: its record, language breakdown,
+/// technologies, and submodule children.
 #[tauri::command]
 #[specta::specta]
 pub fn get_repo_detail(state: State<'_, AppState>, id: i64) -> CommandResult<Option<RepoDetail>> {
     let conn = state.core.db.read()?;
     Ok(repo_db::get_repo_detail(&conn, id)?)
+}
+
+/// Set or clear the manual category override (FR-3.7). `category = None`
+/// (or an unrecognised string) reverts to the computed value; the computed
+/// category stays visible beside the override either way.
+#[tauri::command]
+#[specta::specta]
+pub fn set_repo_category(
+    state: State<'_, AppState>,
+    id: i64,
+    category: Option<String>,
+) -> CommandResult<()> {
+    let parsed = category.as_deref().and_then(repo_db::category_from_str);
+    state
+        .core
+        .db
+        .write(|c| repo_db::set_category_manual(c, id, parsed))?;
+    Ok(())
+}
+
+/// Every figure the Dashboard renders, in one round trip (PRD §6). The
+/// compromise banner (FR-6.3) keys off `compromised` being non-empty.
+#[tauri::command]
+#[specta::specta]
+pub fn dashboard_stats(state: State<'_, AppState>) -> CommandResult<DashboardStats> {
+    let conn = state.core.db.read()?;
+    Ok(dashboard::stats(&conn)?)
 }

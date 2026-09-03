@@ -45,6 +45,8 @@ pub(crate) fn specta_builder() -> Builder<tauri::Wry> {
             commands::repos::scan_cancel,
             commands::repos::list_repos,
             commands::repos::get_repo_detail,
+            commands::repos::set_repo_category,
+            commands::repos::dashboard_stats,
             commands::advisories::sync_advisories,
             commands::advisories::get_sync_status,
             commands::advisories::list_advisory_impact,

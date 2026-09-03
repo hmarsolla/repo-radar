@@ -76,6 +76,7 @@ export function ScanProvider({ children }: { children: React.ReactNode }) {
         if (e.payload.scanId !== scanIdRef.current) return;
         qc.invalidateQueries({ queryKey: ["repos"] });
         qc.invalidateQueries({ queryKey: ["repo", e.payload.repoId] });
+        qc.invalidateQueries({ queryKey: ["dashboard"] });
       }),
     );
     track(() =>
@@ -90,6 +91,7 @@ export function ScanProvider({ children }: { children: React.ReactNode }) {
         scanIdRef.current = null;
         setState((s) => ({ ...s, running: false }));
         qc.invalidateQueries({ queryKey: ["repos"] });
+        qc.invalidateQueries({ queryKey: ["dashboard"] });
       }),
     );
     track(() =>

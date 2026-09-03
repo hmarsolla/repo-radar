@@ -405,28 +405,28 @@ Goal: point the app at a folder and see real repositories with real git and lang
 
   **Done when:** A fixture set of repos of each category classifies correctly, an ambiguous repo yields `Fullstack` rather than an arbitrary pick, and a signal-less repo yields `Unknown` rather than a guess.
 
-- [ ] **M3-4 · Category explainability UI** · Size: M · Deps: M3-3
+- [x] **M3-4 · Category explainability UI** · Size: M · Deps: M3-3
   Refs: FR-3.6
 
   Every rule that fired, its signal, its weight, and per-category totals.
 
   **Done when:** A user can see exactly why a repo was classified as it was. This is the mechanism by which the classifier earns trust — or gets corrected.
 
-- [ ] **M3-5 · Manual category override** · Size: S · Deps: M3-4
+- [x] **M3-5 · Manual category override** · Size: S · Deps: M3-4
   Refs: FR-3.7
 
   Persists across re-scans; marked as manual; computed value stays visible alongside.
 
   **Done when:** An override survives a re-scan and the control sits adjacent to the evidence that was wrong.
 
-- [ ] **M3-6 · Dashboard** · Size: L · Deps: M3-3, M2-18
+- [x] **M3-6 · Dashboard** · Size: L · Deps: M3-3, M2-18
   Refs: PRD §6 (Dashboard)
 
   Repo count, health distribution histogram, category donut, language bar, stalest repos, worst-health repos, freshness indicator — via Recharts.
 
   **Done when:** Charts render real data and update on scan completion.
 
-- [ ] **M3-7 · Compromise banner** · Size: S · Deps: M3-6, M2-18
+- [x] **M3-7 · Compromise banner** · Size: S · Deps: M3-6, M2-18
   Refs: FR-6.3, DESIGN §14.3
 
   **Done when:** The banner renders **only** when compromise findings exist. A banner that is always present is furniture; this one has to mean something when it appears.

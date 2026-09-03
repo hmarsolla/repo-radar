@@ -46,12 +46,14 @@ export const commands = {
 	 */
 	listRepos: (filter: RepoFilter) => typedError<RepoListItem[], CommandError>(__TAURI_INVOKE("list_repos", { filter })),
 	/**
-	 *  Full detail for one repository: its record, language breakdown, and
-	 *  submodule children.
+	 *  Full detail for one repository: its record, language breakdown,
+	 *  technologies, and submodule children.
 	 */
 	getRepoDetail: (id: number) => typedError<{
 	repo: RepoRecord,
 	languages: LanguageStat[],
+	/**  Detected technologies, dependency-confirmed first (FR-2.3, FR-2.4). */
+	technologies: TechDetail[],
 	/**  Submodule children (FR-1.5) — shown here, never in the main list. */
 	submodules: RepoRecord[],
 	/**
@@ -62,6 +64,17 @@ export const commands = {
 	/**  Compromise findings first, then vulnerabilities (FR-6.1). */
 	findings: FindingDetail[],
 } | null, CommandError>(__TAURI_INVOKE("get_repo_detail", { id })),
+	/**
+	 *  Set or clear the manual category override (FR-3.7). `category = None`
+	 *  (or an unrecognised string) reverts to the computed value; the computed
+	 *  category stays visible beside the override either way.
+	 */
+	setRepoCategory: (id: number, category: string | null) => typedError<null, CommandError>(__TAURI_INVOKE("set_repo_category", { id, category })),
+	/**
+	 *  Every figure the Dashboard renders, in one round trip (PRD §6). The
+	 *  compromise banner (FR-6.3) keys off `compromised` being non-empty.
+	 */
+	dashboardStats: () => typedError<DashboardStats, CommandError>(__TAURI_INVOKE("dashboard_stats")),
 	/**
 	 *  Start an advisory sync in the background. Returns immediately; progress
 	 *  via `sync:progress`, finish via `sync:complete`. A manual sync and the
@@ -100,6 +113,12 @@ export type AdvisoryImpact = {
 	repoName: string,
 };
 
+/**  A `(label, count)` pair for a histogram or donut slice. */
+export type Bucket = {
+	label: string,
+	count: number,
+};
+
 export type CommandError = 
 /**  Unrecoverable — show the recovery screen (Reset database / Open data folder). */
 { tier: "fatal"; message: string } | 
@@ -107,6 +126,33 @@ export type CommandError =
 { tier: "operation"; message: string } | 
 /**  Anything else — a bad argument, a transient query error. */
 { tier: "internal"; message: string };
+
+export type DashboardStats = {
+	/**  Top-level repositories (submodule children excluded). */
+	repoCount: number,
+	dirtyCount: number,
+	/**
+	 *  Health band → repo count, ordered worst-first. A repo with no band
+	 *  yet counts as `unknown` (never as healthy — DESIGN §14.4).
+	 */
+	healthDistribution: Bucket[],
+	/**
+	 *  Effective category → repo count, largest first. The manual override
+	 *  (FR-3.7) wins over the computed value here.
+	 */
+	categoryDistribution: Bucket[],
+	/**  Language → summed code lines across all repos, largest first (top 8). */
+	languageDistribution: Bucket[],
+	/**  Up to 5 repos with the oldest last commit. */
+	stalest: RepoRef[],
+	/**  Up to 5 repos with the lowest health score. */
+	worstHealth: RepoRef[],
+	/**
+	 *  Every repo with at least one un-suppressed compromise finding. The
+	 *  M3-7 banner renders iff this is non-empty (FR-6.3).
+	 */
+	compromised: RepoRef[],
+};
 
 export type EcosystemStatus = {
 	ecosystem: string,
@@ -194,6 +240,8 @@ export type Pong = {
 export type RepoDetail = {
 	repo: RepoRecord,
 	languages: LanguageStat[],
+	/**  Detected technologies, dependency-confirmed first (FR-2.3, FR-2.4). */
+	technologies: TechDetail[],
 	/**  Submodule children (FR-1.5) — shown here, never in the main list. */
 	submodules: RepoRecord[],
 	/**
@@ -271,7 +319,30 @@ export type RepoRecord = {
 	lastScannedAt: string | null,
 	healthScore: number | null,
 	healthBand: string | null,
+	/**  The *computed* category. Stays visible even when overridden (FR-3.7). */
 	category: string | null,
+	/**  `low` / `medium` / `high`. */
+	categoryConfidence: string | null,
+	/**
+	 *  The `category_scores` JSON — the full per-rule / per-category
+	 *  breakdown, rendered directly by the explainability UI (FR-3.6).
+	 */
+	categoryScores: string | null,
+	/**  A manual override (FR-3.7); `None` when the computed value stands. */
+	categoryManual: string | null,
+};
+
+/**  A repo referenced from one of the "needs attention" lists. */
+export type RepoRef = {
+	id: number,
+	name: string,
+	/**  Present on the stalest list. */
+	lastCommitAt: string | null,
+	/**  Present on the worst-health list. */
+	healthScore: number | null,
+	healthBand: string | null,
+	/**  Confirmed-compromise finding count (0 unless this is a compromise row). */
+	compromiseCount: number,
 };
 
 /**  Sort key for the repo list. Sorting happens in SQL (DESIGN §12.1). */
@@ -363,6 +434,17 @@ export type SyncStatus = {
 	/**  The most recent sync error, if the last attempt failed. */
 	lastError: string | null,
 	ecosystems: EcosystemStatus[],
+};
+
+/**
+ *  One detected technology for the detail view (FR-2.3). `evidence` entries
+ *  are prefixed `dependency:` or `file:`; a detection with no `dependency:`
+ *  entry renders with lower prominence (FR-2.4).
+ */
+export type TechDetail = {
+	tech: string,
+	kind: string,
+	evidence: string[],
 };
 
 export type Theme = "light" | "dark" | "system";

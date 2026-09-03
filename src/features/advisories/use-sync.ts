@@ -28,6 +28,7 @@ export function useSyncStatus() {
         qc.invalidateQueries({ queryKey: ["syncStatus"] });
         qc.invalidateQueries({ queryKey: ["repos"] });
         qc.invalidateQueries({ queryKey: ["repo"] });
+        qc.invalidateQueries({ queryKey: ["dashboard"] });
       }),
     );
     return () => {

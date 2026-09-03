@@ -6,6 +6,7 @@
 //! [`pool::PooledConn`] and never reach for global state.
 
 pub mod advisories;
+pub mod dashboard;
 pub mod findings;
 pub mod migrations;
 pub mod pool;
