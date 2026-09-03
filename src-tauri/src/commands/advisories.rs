@@ -11,9 +11,7 @@ use repo_radar_core::db::advisories::{self, SyncStatus};
 use repo_radar_core::db::findings;
 use repo_radar_core::db::repos as repo_db;
 use repo_radar_core::model::Ecosystem;
-use repo_radar_core::osv::sync::{
-    self, SyncMode, SyncOptions, SyncReporter,
-};
+use repo_radar_core::osv::sync::{self, SyncMode, SyncOptions, SyncReporter};
 use repo_radar_core::CoreContext;
 
 use crate::error::{CommandError, CommandResult};
@@ -25,7 +23,11 @@ use crate::state::AppState;
 /// scheduled sync cannot overlap (the `sync_lock`, DESIGN §12.3).
 #[tauri::command]
 #[specta::specta]
-pub fn sync_advisories(app: AppHandle, state: State<'_, AppState>, mode: SyncMode) -> CommandResult<()> {
+pub fn sync_advisories(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    mode: SyncMode,
+) -> CommandResult<()> {
     // Non-blocking: if a sync already holds the lock, say so.
     let guard = match Arc::clone(&state.sync_lock).try_lock_owned() {
         Ok(g) => g,
@@ -76,11 +78,7 @@ fn run_sync(core: &CoreContext, mode: SyncMode, app: &AppHandle) -> Result<usize
 /// Re-run stage 4 for every repo so scores reflect the new advisory data.
 fn rescore_all(core: &CoreContext, app: &AppHandle) {
     let weights = repo_radar_core::score::Weights::default();
-    let repos: Vec<(i64, String)> = match core
-        .db
-        .read()
-        .and_then(|c| repo_db::list_top_level(&c))
-    {
+    let repos: Vec<(i64, String)> = match core.db.read().and_then(|c| repo_db::list_top_level(&c)) {
         Ok(list) => list.into_iter().map(|r| (r.id, r.path)).collect(),
         Err(_) => return,
     };
@@ -163,9 +161,11 @@ pub fn live_query(
     let eco = Ecosystem::from_osv_id(&ecosystem).ok_or_else(|| CommandError::Internal {
         message: format!("unknown ecosystem {ecosystem}"),
     })?;
-    let advisory_ids = repo_radar_core::osv::sync::live_query(eco, &name, &version)
-        .map_err(|e| CommandError::Operation {
-            message: e.to_string(),
+    let advisory_ids =
+        repo_radar_core::osv::sync::live_query(eco, &name, &version).map_err(|e| {
+            CommandError::Operation {
+                message: e.to_string(),
+            }
         })?;
     Ok(LiveQueryResult { advisory_ids })
 }
@@ -178,7 +178,9 @@ pub fn spawn_scheduler(app: AppHandle) {
         let mut tick = tokio::time::interval(std::time::Duration::from_secs(3600));
         loop {
             tick.tick().await;
-            let Some(state) = app.try_state::<AppState>() else { break };
+            let Some(state) = app.try_state::<AppState>() else {
+                break;
+            };
             let due = {
                 let conn = match state.core.db.read() {
                     Ok(c) => c,

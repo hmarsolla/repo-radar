@@ -160,13 +160,12 @@ pub fn incremental_sync(
 
     let mut summary = SyncSummary::default();
     for &eco in &opts.ecosystems {
-        let count = incremental_one(db, &client, eco, &opts.cache_dir, reporter).inspect_err(
-            |e| {
+        let count =
+            incremental_one(db, &client, eco, &opts.cache_dir, reporter).inspect_err(|e| {
                 let _ = db.write(|c| {
                     log_sync(c, eco, "incremental", None, "failed", Some(&e.to_string()))
                 });
-            },
-        )?;
+            })?;
         summary.per_ecosystem.push((eco, count));
     }
     Ok(summary)
@@ -253,8 +252,10 @@ fn incremental_one(
                 let Some((advisory, affected)) = normalize(record) else {
                     continue;
                 };
-                let relevant: Vec<_> =
-                    affected.into_iter().filter(|a| a.ecosystem == eco).collect();
+                let relevant: Vec<_> = affected
+                    .into_iter()
+                    .filter(|a| a.ecosystem == eco)
+                    .collect();
                 // Replace this advisory's rows for this ecosystem.
                 tx.execute(
                     "DELETE FROM affected_ranges WHERE advisory_id = ?1 AND ecosystem = ?2",

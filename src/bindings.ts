@@ -54,7 +54,33 @@ export const commands = {
 	languages: LanguageStat[],
 	/**  Submodule children (FR-1.5) — shown here, never in the main list. */
 	submodules: RepoRecord[],
+	/**
+	 *  The stored `health_breakdown` JSON, rendered directly by the UI so
+	 *  the number shown and the number explained cannot drift (FR-6.9).
+	 */
+	healthBreakdown: string | null,
+	/**  Compromise findings first, then vulnerabilities (FR-6.1). */
+	findings: FindingDetail[],
 } | null, CommandError>(__TAURI_INVOKE("get_repo_detail", { id })),
+	/**
+	 *  Start an advisory sync in the background. Returns immediately; progress
+	 *  via `sync:progress`, finish via `sync:complete`. A manual sync and the
+	 *  scheduled sync cannot overlap (the `sync_lock`, DESIGN §12.3).
+	 */
+	syncAdvisories: (mode: SyncMode) => typedError<null, CommandError>(__TAURI_INVOKE("sync_advisories", { mode })),
+	/**
+	 *  Current advisory-database status (drives the freshness indicator and the
+	 *  Advisories screen).
+	 */
+	getSyncStatus: () => typedError<SyncStatus, CommandError>(__TAURI_INVOKE("get_sync_status")),
+	/**  Which repos a given advisory currently affects (cross-repo impact view). */
+	listAdvisoryImpact: (advisoryId: string) => typedError<AdvisoryImpact[], CommandError>(__TAURI_INVOKE("list_advisory_impact", { advisoryId })),
+	/**
+	 *  FR-5.9 live query — opt-in, per-dependency. **This sends the package name
+	 *  and version to `api.osv.dev`.** Never reachable from a scan or any
+	 *  automatic path (M2-21).
+	 */
+	liveQuery: (ecosystem: string, name: string, version: string) => typedError<LiveQueryResult, CommandError>(__TAURI_INVOKE("live_query", { ecosystem, name, version })),
 };
 
 /** Events */
@@ -69,6 +95,11 @@ export const events = {
 };
 
 /* Types */
+export type AdvisoryImpact = {
+	repoId: number,
+	repoName: string,
+};
+
 export type CommandError = 
 /**  Unrecoverable — show the recovery screen (Reset database / Open data folder). */
 { tier: "fatal"; message: string } | 
@@ -76,6 +107,47 @@ export type CommandError =
 { tier: "operation"; message: string } | 
 /**  Anything else — a bad argument, a transient query error. */
 { tier: "internal"; message: string };
+
+export type EcosystemStatus = {
+	ecosystem: string,
+	advisoryCount: number,
+	compromiseCount: number,
+	lastSuccess: string | null,
+	/**
+	 *  `Thin` for crates.io and Go — the UI must caveat a clean result
+	 *  there (spike §8.2.1, D1).
+	 */
+	malCoverage: MalCoverage,
+};
+
+/**
+ *  One finding for the Health tab (FR-6.9). Rendered from the stored data —
+ *  the UI never recomputes a score.
+ */
+export type FindingDetail = {
+	advisoryId: string,
+	/**  `compromise` | `vulnerability`. */
+	kind: string,
+	severity: string,
+	confidence: string,
+	packageName: string,
+	packageVersion: string,
+	fixedVersion: string | null,
+	summary: string,
+	deduction: number | null,
+};
+
+/**
+ *  How current the advisory data is, carried into prompts and shown in the
+ *  global freshness indicator (FR-5.6).
+ */
+export type Freshness = 
+/**  Never synced — findings are not trustworthy yet. */
+"Never" | "Fresh" | 
+/**  Older than 7 days. */
+"Stale" | 
+/**  Older than 30 days. */
+"VeryStale";
 
 /**
  *  Per-language aggregate for a repo (FR-2.1). Never a file list — memory
@@ -89,6 +161,24 @@ export type LanguageStat = {
 	/**  Share of total code lines, 0..=100. */
 	percentage: number | null,
 };
+
+export type LiveQueryResult = {
+	advisoryIds: string[],
+};
+
+/**
+ *  How complete OSV's malicious-package data is for an ecosystem. Hard-coded
+ *  from the M2-12 spike; revisited each release.
+ */
+export type MalCoverage = 
+/**  Systematic automated feeds — "no compromise findings" is meaningful. */
+"Strong" | 
+/**
+ *  Only a handful of hand-filed reports. "No compromise findings" means
+ *  "the few known cases were checked", not "this is clean". The UI must
+ *  say so.
+ */
+"Thin";
 
 /**
  *  Round-trips a value through the Rust↔TS boundary. Exists to prove the
@@ -106,6 +196,13 @@ export type RepoDetail = {
 	languages: LanguageStat[],
 	/**  Submodule children (FR-1.5) — shown here, never in the main list. */
 	submodules: RepoRecord[],
+	/**
+	 *  The stored `health_breakdown` JSON, rendered directly by the UI so
+	 *  the number shown and the number explained cannot drift (FR-6.9).
+	 */
+	healthBreakdown: string | null,
+	/**  Compromise findings first, then vulnerabilities (FR-6.1). */
+	findings: FindingDetail[],
 };
 
 /**
@@ -136,6 +233,16 @@ export type RepoListItem = {
 	lastCommitAt: string | null,
 	dirty: boolean,
 	primaryLanguage: string | null,
+	healthScore: number | null,
+	/**  `unknown` / `critical` / `poor` / `fair` / `good` / `excellent`. */
+	healthBand: string | null,
+	/**
+	 *  Confirmed compromise findings and ordinary vulnerabilities are kept
+	 *  in **separate columns** (FR-6.1, M2-23) — a combined "issues" count
+	 *  would destroy the distinction the health model exists to make.
+	 */
+	compromiseCount: number,
+	vulnerabilityCount: number,
 };
 
 /**  Full git columns for one repo, for the detail view. */
@@ -162,6 +269,9 @@ export type RepoRecord = {
 	branchCount: number | null,
 	hasStash: boolean | null,
 	lastScannedAt: string | null,
+	healthScore: number | null,
+	healthBand: string | null,
+	category: string | null,
 };
 
 /**  Sort key for the repo list. Sorting happens in SQL (DESIGN §12.1). */
@@ -230,12 +340,29 @@ export type SyncComplete = {
 	message: string | null,
 };
 
+export type SyncMode = "full" | "incremental";
+
 /**  `sync:progress`. */
 export type SyncProgress = {
 	ecosystem: string,
 	phase: string,
 	done: number,
 	total: number,
+};
+
+export type SyncStatus = {
+	/**  RFC 3339 time of the most recent `complete` sync, any ecosystem. */
+	lastSuccess: string | null,
+	/**
+	 *  `false` on a fresh install — health is *unknown*, not healthy
+	 *  (DESIGN §14.4, M2-22).
+	 */
+	everSynced: boolean,
+	advisoryCount: number,
+	freshness: Freshness,
+	/**  The most recent sync error, if the last attempt failed. */
+	lastError: string | null,
+	ecosystems: EcosystemStatus[],
 };
 
 export type Theme = "light" | "dark" | "system";

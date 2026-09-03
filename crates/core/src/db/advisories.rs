@@ -13,7 +13,9 @@ use specta::Type;
 use crate::error::CoreResult;
 use crate::model::{Confidence, Ecosystem, FindingKind, Freshness, Scope, Severity};
 use crate::osv::matcher::Candidate;
-use crate::osv::record::{parse_events_json, MalCoverage, NormalizedAffected, NormalizedRange, RangeType};
+use crate::osv::record::{
+    parse_events_json, MalCoverage, NormalizedAffected, NormalizedRange, RangeType,
+};
 
 /// A repo dependency row as the matcher needs it.
 #[derive(Debug, Clone)]

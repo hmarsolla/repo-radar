@@ -589,9 +589,11 @@ pub fn get_repo_detail(conn: &Connection, id: i64) -> CoreResult<Option<RepoDeta
         .collect::<rusqlite::Result<Vec<_>>>()?;
 
     let health_breakdown: Option<String> = conn
-        .query_row("SELECT health_breakdown FROM repos WHERE id = ?1", [id], |r| {
-            r.get(0)
-        })
+        .query_row(
+            "SELECT health_breakdown FROM repos WHERE id = ?1",
+            [id],
+            |r| r.get(0),
+        )
         .optional()?
         .flatten();
 
