@@ -97,6 +97,19 @@ fn rescore_all(core: &CoreContext, app: &AppHandle) {
     .emit(app);
 }
 
+/// The configured scheduled-sync interval in hours, from the settings store
+/// (`0` = manual only). Defaults to 24 when the store is missing or
+/// unreadable.
+fn read_sync_interval_hours(app: &AppHandle) -> u32 {
+    use tauri_plugin_store::StoreExt;
+    app.store(crate::settings::STORE_FILE)
+        .ok()
+        .and_then(|s| s.get(crate::settings::SETTINGS_KEY))
+        .and_then(|v| serde_json::from_value::<crate::settings::Settings>(v).ok())
+        .map(|s| s.sync_interval_hours)
+        .unwrap_or(24)
+}
+
 struct EventSyncReporter {
     app: AppHandle,
 }
@@ -181,6 +194,13 @@ pub fn spawn_scheduler(app: AppHandle) {
             let Some(state) = app.try_state::<AppState>() else {
                 break;
             };
+
+            // FR-10.1: `0` interval means manual-only — no scheduled sync.
+            let interval_hours = read_sync_interval_hours(&app);
+            if interval_hours == 0 {
+                continue;
+            }
+
             let due = {
                 let conn = match state.core.db.read() {
                     Ok(c) => c,
@@ -193,7 +213,7 @@ pub fn spawn_scheduler(app: AppHandle) {
                         .and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
                         .map(|t| {
                             chrono::Utc::now() - t.with_timezone(&chrono::Utc)
-                                > chrono::Duration::hours(24)
+                                > chrono::Duration::hours(interval_hours as i64)
                         })
                         .unwrap_or(true),
                     Err(_) => false,

@@ -8,16 +8,24 @@ import { cn } from "@/lib/utils";
 import { commands, unwrap } from "@/lib/ipc";
 import { HealthTab } from "@/features/health/health-tab";
 import { CategorySignals } from "@/features/repos/category-signals";
+import { OutdatedTab } from "@/features/repos/outdated-tab";
+import { ScanWarnings } from "@/features/system/scan-warnings";
+import { scopePath } from "@/lib/warnings";
 
 export function RepoDetailView() {
   const { id } = useParams();
   const repoId = Number(id);
-  const [tab, setTab] = useState<"overview" | "health">("overview");
+  const [tab, setTab] = useState<"overview" | "health" | "updates">("overview");
 
   const detail = useQuery({
     queryKey: ["repo", repoId],
     queryFn: () => unwrap(commands.getRepoDetail(repoId)),
     enabled: Number.isFinite(repoId),
+  });
+
+  const lastScan = useQuery({
+    queryKey: ["latestScan"],
+    queryFn: () => unwrap(commands.latestScanSummary()),
   });
 
   if (detail.isLoading) {
@@ -33,6 +41,9 @@ export function RepoDetailView() {
 
   const { repo, languages, submodules, technologies } = detail.data;
   const band = repo.healthBand ?? "unknown";
+  const repoWarnings = (lastScan.data?.warnings ?? []).filter(
+    (w) => scopePath(w) === repo.path,
+  );
 
   return (
     <div>
@@ -46,8 +57,16 @@ export function RepoDetailView() {
 
       <PageHeader title={repo.name} description={repo.path} />
 
+      {repoWarnings.length > 0 ? (
+        <ScanWarnings
+          warnings={repoWarnings}
+          title="warnings while scanning this repository"
+          className="mb-4"
+        />
+      ) : null}
+
       <div className="mb-4 flex gap-1 border-b">
-        {(["overview", "health"] as const).map((t) => (
+        {(["overview", "health", "updates"] as const).map((t) => (
           <button
             key={t}
             onClick={() => setTab(t)}
@@ -70,6 +89,8 @@ export function RepoDetailView() {
 
       {tab === "health" ? (
         <HealthTab detail={detail.data} />
+      ) : tab === "updates" ? (
+        <OutdatedTab repoId={repoId} />
       ) : (
         <div className="grid gap-4 md:grid-cols-2">
           <div className="md:col-span-2">

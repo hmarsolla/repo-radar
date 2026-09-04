@@ -1,12 +1,14 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Core permissions for the main window: opener, persistent settings store, and the folder picker used during onboarding (FR-10.4).",
+  "description": "Core permissions for the main window: opener (incl. revealing the data folder, FR-10.3), persistent settings store, the folder/file pickers (onboarding FR-10.4, prompt export FR-9.5), and clipboard write for prompt copy (FR-9.7).",
   "windows": ["main"],
   "permissions": [
     "core:default",
     "opener:default",
+    "opener:allow-open-path",
     "store:default",
-    "dialog:default"
+    "dialog:default",
+    "clipboard-manager:allow-write-text"
   ]
 }

@@ -7,6 +7,7 @@ use tauri_specta::Event as _;
 
 use repo_radar_core::db::dashboard::{self, DashboardStats};
 use repo_radar_core::db::repos::{self as repo_db, RepoDetail, RepoFilter, RepoListItem};
+use repo_radar_core::db::scans::{self, ScanSummary};
 use repo_radar_core::scan::pipeline::{self, ScanContext, ScanRoot};
 use repo_radar_core::scan::CancelToken;
 use repo_radar_core::CoreContext;
@@ -47,6 +48,17 @@ pub fn scan_start(app: AppHandle, state: State<'_, AppState>) -> CommandResult<i
         });
     }
 
+    // FR-10.1: the user's `prune_list` is *added* to the built-ins.
+    let extra_prune: Vec<String> = {
+        use tauri_plugin_store::StoreExt;
+        app.store(crate::settings::STORE_FILE)
+            .ok()
+            .and_then(|s| s.get(crate::settings::SETTINGS_KEY))
+            .and_then(|v| serde_json::from_value::<crate::settings::Settings>(v).ok())
+            .map(|s| s.prune_list)
+            .unwrap_or_default()
+    };
+
     let scan_id = pipeline::begin_scan(&core.db)?;
     let cancel = CancelToken::new();
     *state.active_scan.lock().unwrap() = Some(ScanHandle {
@@ -59,7 +71,13 @@ pub fn scan_start(app: AppHandle, state: State<'_, AppState>) -> CommandResult<i
         .name(format!("repo-radar-scan-{scan_id}"))
         .spawn(move || {
             let reporter = EventReporter::new(thread_app.clone(), scan_id);
-            let ctx = ScanContext::new(&core.db, &core.rules);
+            let mut ctx = ScanContext::new(&core.db, &core.rules);
+            for dir in extra_prune {
+                let dir = dir.trim().to_string();
+                if !dir.is_empty() && !ctx.discovery.prune_dirs.contains(&dir) {
+                    ctx.discovery.prune_dirs.push(dir);
+                }
+            }
             if let Err(e) = pipeline::run_scan(&ctx, scan_id, &roots, &cancel, &reporter) {
                 tracing::error!(scan_id, error = %e, "scan failed");
                 let _ = ScanError {
@@ -143,4 +161,15 @@ pub fn set_repo_category(
 pub fn dashboard_stats(state: State<'_, AppState>) -> CommandResult<DashboardStats> {
     let conn = state.core.db.read()?;
     Ok(dashboard::stats(&conn)?)
+}
+
+/// The most recent scan and its persisted warnings (DESIGN §14.4). `None`
+/// until a scan has run. The frontend uses it to tell "never scanned" from
+/// "scanned, found nothing", and to badge repos that produced warnings even
+/// after a reload.
+#[tauri::command]
+#[specta::specta]
+pub fn latest_scan_summary(state: State<'_, AppState>) -> CommandResult<Option<ScanSummary>> {
+    let conn = state.core.db.read()?;
+    Ok(scans::latest_scan(&conn)?)
 }

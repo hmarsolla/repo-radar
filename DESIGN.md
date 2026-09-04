@@ -1078,7 +1078,7 @@ Deferred until measured: parallelism *within* a repo, a persistent scan daemon, 
 
 ## 18. Security and privacy
 
-- **Outbound network is exactly two destinations**, both enumerable in the Tauri CSP and both user-visible: `storage.googleapis.com` / `api.osv.dev` (advisories), and package registries (only on the explicit FR-8 action).
+- **Outbound network is exactly two groups of destinations**, both user-visible: `osv-vulnerabilities.storage.googleapis.com` / `api.osv.dev` (advisories), and the package registries `registry.npmjs.org`, `pypi.org`, `crates.io`, `proxy.golang.org` — the last group **only** on the explicit FR-8 "Check for updates" action (M5-1 enumerates them in `outdated::REGISTRY_HOSTS`). The FR-8 requests send package names only, never version pins in the URL and nothing about the user's code.
 - **Nothing about the user's code is transmitted.** OSV bulk downloads are one-way: the app downloads the whole ecosystem database and matches locally, so the user's dependency list never leaves the machine. This is a direct consequence of choosing bulk download over the query API, and is the main reason to prefer it.
 - **The FR-5.9 live query is the one exception** — it sends a single package name and version. It is opt-in, per-dependency, and the UI says so.
 - **Tauri capabilities are minimally scoped**: the `fs` plugin is granted only the app's own data and config directories. Reading scanned repositories happens in Rust, which is not subject to the frontend's capability restrictions — so the webview never holds filesystem access to the user's source, only the core does.

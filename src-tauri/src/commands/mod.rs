@@ -3,6 +3,8 @@
 //! `repo-radar-core`; this layer only adapts types and owns state.
 
 pub mod advisories;
+pub mod outdated;
+pub mod prompts;
 pub mod repos;
 pub mod settings;
 pub mod system;

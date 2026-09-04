@@ -1,0 +1,90 @@
+{#- T2 — performance & security opportunities. One repo, with file bodies,
+    findings, and dependency annotations. The model MUST separate confirmed
+    issues from speculative ones (FR-9.1). Context: docs/prompt-context.md. -#}
+{% set repo = repos[0] -%}
+You are a senior engineer doing a performance and security pass over the
+repository **{{ repo.name }}**. Work only from what is provided below. When you are
+inferring rather than observing, say so.
+
+Generated {{ generated_at }}. Advisory data was {{ advisory_freshness | freshness_phrase }}.
+
+--------------------------------------------------------------------------------
+REPOSITORY PROFILE
+--------------------------------------------------------------------------------
+Name: {{ repo.name }}
+Category: {{ repo.category }}
+{%- if repo.health %} · health {{ repo.health.score }}/100 ({{ repo.health.band }}){% endif %}
+{% if repo.git and repo.git.branch %}
+Branch: {{ repo.git.branch }}
+{%- if repo.git.last_commit_at %} · last commit {{ repo.git.last_commit_at }}{% endif %}
+{% endif %}
+
+Languages:
+{% for l in repo.languages -%}
+  - {{ l.language }} — {{ l.percentage | round(1) }}% ({{ l.code_lines }} lines)
+{% endfor -%}
+{% if repo.technologies %}
+Technologies:
+{% for t in repo.technologies -%}
+  - {{ t.tech }} ({{ t.kind }})
+{% endfor -%}
+{% endif %}
+
+Dependencies: {{ repo.dependency_counts.direct_total }} direct, {{ repo.dependency_counts.transitive_total }} transitive.
+Direct dependencies (a leading ! marks one with a matched advisory):
+{% for d in repo.direct_dependencies -%}
+  - {% if d.advisories %}! {% endif %}{{ d.ecosystem }} {{ d.name }}@{{ d.version }} ({{ d.scope }}, version {{ d.version_confidence }})
+{%- if d.advisories %} — {{ d.advisories | join(", ") }}{% endif %}
+{% endfor %}
+--------------------------------------------------------------------------------
+KNOWN SECURITY FINDINGS
+--------------------------------------------------------------------------------
+{% if repo.findings -%}
+These come from matching dependencies against an advisory database. CONFIRMED
+matched an exact locked version; SPECULATIVE matched only a version range and may
+not apply to the version that actually resolves.
+{% for f in repo.findings %}
+- [{{ "CONFIRMED" if f.confirmed else "SPECULATIVE" }}] {{ f.kind | upper }} {{ f.advisory_id }}
+  {{ f.package }}@{{ f.version }} · severity {{ f.severity }}
+  {%- if f.fixed_version %} · fixed in {{ f.fixed_version }}{% endif %}
+  {{ f.summary }}
+{% endfor -%}
+{% else -%}
+No advisory matches were recorded for this repository
+{%- if advisory_freshness == "Never" %}, but the advisory database has never been
+synced, so treat that as "unknown", not "clean"{% endif %}.
+{% endif %}
+
+--------------------------------------------------------------------------------
+SOURCE ({{ scope.kind }})
+--------------------------------------------------------------------------------
+{% if files -%}
+{% for file in files %}
+### {{ file.path }}{% if file.language %} ({{ file.language }}){% endif %}
+
+```{{ file.language | lower if file.language else "" }}
+{{ file.content }}
+```
+{% endfor -%}
+{% else -%}
+(No file bodies were included — reason from the profile and findings above.)
+{% endif %}
+
+--------------------------------------------------------------------------------
+WHAT TO PRODUCE
+--------------------------------------------------------------------------------
+Two clearly separated sections:
+
+## Confirmed issues
+Problems you can point at a specific line, dependency, or advisory. For each: the
+location, what is wrong, the impact, and the fix. Include the known security
+findings above that are marked CONFIRMED and still apply.
+
+## Speculative opportunities
+Improvements that depend on context you cannot see (runtime load, data sizes,
+deployment shape) or on a SPECULATIVE finding. For each: what you would change,
+what evidence would confirm it is worth doing, and the risk of doing it blindly.
+
+Within each section, order by impact. Do not pad — if a section is short, it is
+short. Call out anything in the source that looks deliberately security-relevant
+(auth, crypto, input parsing, subprocess, deserialization) even if it is fine.

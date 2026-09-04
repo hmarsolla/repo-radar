@@ -33,6 +33,11 @@ cvss = "2"
 toml = "1"
 serde_yaml_ng = "0.10"
 
+# Prompt template rendering (M4-1). Sandboxed by default — a template gets no
+# filesystem or environment access, which matters because user templates
+# (FR-9.2) run through the same engine as the built-ins.
+minijinja = "2"
+
 # Advisory sync (M2-13 … M2-15) — the only outbound network IO in core
 # rustls + webpki-roots — no system OpenSSL dependency on Linux/CI, and a
 # bundled trust store. The one-time build cost is worth the portability.

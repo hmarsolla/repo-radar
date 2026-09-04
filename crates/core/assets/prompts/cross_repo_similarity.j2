@@ -1,15 +1,62 @@
-{# T1 — cross-repo similarity (N repos). Built-in template; runs through the
-   same minijinja path as user templates (DESIGN §11.1). Fleshed out in M4-2. #}
-You are reviewing {{ repos | length }} repositories for overlap and
-consolidation opportunities. Advisory data was last refreshed:
-{{ advisory_freshness }}.
+{#- T1 — cross-repo similarity. N repos, metadata only (no file bodies).
+    Runs through the same minijinja path as user templates (DESIGN §11.1).
+    Context reference: docs/prompt-context.md. -#}
+You are a staff engineer auditing a group of {{ repos | length }} repositories that
+belong to one team. Your job is to find where they overlap and where that overlap
+is worth acting on.
 
+Generated {{ generated_at }}. Advisory data was {{ advisory_freshness | freshness_phrase }}.
+
+No source code is included below — reason from the dependency lists, technologies,
+and structure.
 {% for repo in repos %}
-## {{ repo.name }} — {{ repo.category }}
-Languages: {% for l in repo.languages %}{{ l.language }} ({{ l.percentage }}%){% if not loop.last %}, {% endif %}{% endfor %}
-Technologies: {% for t in repo.technologies %}{{ t.tech }}{% if not loop.last %}, {% endif %}{% endfor %}
-Direct dependencies: {% for d in repo.direct_dependencies %}{{ d.name }}@{{ d.version }}{% if not loop.last %}, {% endif %}{% endfor %}
-{% endfor %}
+================================================================================
+REPOSITORY: {{ repo.name }}
+Category: {{ repo.category }}
+{%- if repo.health %} · health {{ repo.health.score }}/100 ({{ repo.health.band }}){% endif %}
 
-Identify shared dependencies, duplicated functionality, and repos that could
-merge or share a library. Be concrete about which repos and which modules.
+Languages:
+{% for l in repo.languages -%}
+  - {{ l.language }} — {{ l.percentage | round(1) }}% ({{ l.code_lines }} lines)
+{% endfor -%}
+{% if repo.technologies %}
+Technologies:
+{% for t in repo.technologies -%}
+  - {{ t.tech }} ({{ t.kind }})
+{% endfor -%}
+{% endif %}
+Dependency totals: {{ repo.dependency_counts.direct_total }} direct, {{ repo.dependency_counts.transitive_total }} transitive
+{% for e in repo.dependency_counts.per_ecosystem -%}
+  - {{ e.ecosystem }}: {{ e.direct }} direct / {{ e.transitive }} transitive
+{% endfor %}
+Direct dependencies:
+{% for d in repo.direct_dependencies -%}
+  - {{ d.ecosystem }} {{ d.name }}@{{ d.version }} ({{ d.scope }})
+{% endfor -%}
+{% if repo.category_signals %}
+Why this category:
+{% for s in repo.category_signals -%}
+  - {{ s }}
+{% endfor -%}
+{% endif %}
+{% endfor %}
+================================================================================
+
+Produce:
+
+1. SHARED DEPENDENCIES — packages used by two or more repositories. For each, list
+   the repos and flag version drift (the same package pinned to different major or
+   minor versions in different repos).
+
+2. DUPLICATED CAPABILITY — repositories that appear to solve the same problem
+   (same framework, same category, similar dependency profile). Name the repos and
+   say what the duplicated capability is.
+
+3. CONSOLIDATION OPPORTUNITIES — concrete moves: a shared internal library several
+   repos should depend on instead of reimplementing; two services that could
+   merge; a dependency that should be standardized on one version. For each, name
+   the repositories and the specific modules or concerns, and state the expected
+   payoff and the main risk.
+
+Be specific about which repositories and which modules. If the evidence is thin
+for a claim, say so rather than guessing.

@@ -5,6 +5,7 @@ import { cn } from "@/lib/utils";
 import { NAV_ITEMS } from "@/lib/nav";
 import { ScanProgressIndicator } from "./scan-progress-indicator";
 import { FreshnessIndicator } from "./freshness-indicator";
+import { BootNote } from "@/features/system/boot-note";
 
 export function AppLayout() {
   return (
@@ -39,6 +40,7 @@ export function AppLayout() {
 
       {/* Main column */}
       <div className="flex min-h-0 flex-col">
+        <BootNote />
         <header className="flex items-center justify-between gap-4 border-b px-6 py-3">
           <ScanProgressIndicator />
           <div className="ml-auto">

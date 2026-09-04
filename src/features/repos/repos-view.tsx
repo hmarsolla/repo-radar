@@ -8,6 +8,7 @@ import { commands, unwrap } from "@/lib/ipc";
 import type { RepoFilter, RepoSort } from "@/bindings";
 import { useScan } from "@/features/scan/scan-provider";
 import { Onboarding, useHasScanRoot } from "@/features/onboarding/onboarding";
+import { ScanWarnings } from "@/features/system/scan-warnings";
 import { RepoListTable } from "./repo-list-table";
 
 const SORTS: { value: RepoSort; label: string }[] = [
@@ -43,6 +44,12 @@ export function ReposView() {
     enabled: hasRoot.data === true,
   });
 
+  const lastScan = useQuery({
+    queryKey: ["latestScan"],
+    queryFn: () => unwrap(commands.latestScanSummary()),
+    enabled: hasRoot.data === true,
+  });
+
   if (hasRoot.isLoading) {
     return <p className="p-6 text-sm text-muted-foreground">Loading…</p>;
   }
@@ -51,7 +58,21 @@ export function ReposView() {
   }
 
   const list = repos.data ?? [];
-  const nothingScannedYet = list.length === 0 && !repos.isFetching;
+  const listEmpty = list.length === 0 && !repos.isFetching;
+  const scanned = lastScan.data;
+  const warnings = scan.running
+    ? scan.warnings
+    : (scanned?.warnings ?? []);
+
+  const emptyMessage = scan.running
+    ? "Scanning… repositories will appear here as they complete."
+    : scanned?.status === "complete"
+      ? "Scan complete — no git repositories were found under your scan roots. Check the folders in Settings, or that they contain git repositories."
+      : scanned?.status === "cancelled"
+        ? "The last scan was cancelled before any repositories were recorded."
+        : scanned?.status === "failed"
+          ? "The last scan failed. See the message above, then try again."
+          : 'No repositories scanned yet. Click "Scan now" to start.';
 
   return (
     <div>
@@ -106,11 +127,13 @@ export function ReposView() {
         </div>
       ) : null}
 
-      {nothingScannedYet ? (
+      {warnings.length > 0 ? (
+        <ScanWarnings warnings={warnings} className="mb-4" />
+      ) : null}
+
+      {listEmpty ? (
         <div className="rounded-lg border bg-card p-8 text-center text-sm text-muted-foreground">
-          {scan.running
-            ? "Scanning… repositories will appear here as they complete."
-            : 'No repositories scanned yet. Click "Scan now" to start.'}
+          {emptyMessage}
         </div>
       ) : (
         <RepoListTable repos={list} />

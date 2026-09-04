@@ -8,6 +8,7 @@
 pub mod advisories;
 pub mod dashboard;
 pub mod findings;
+pub mod maintenance;
 pub mod migrations;
 pub mod pool;
 pub mod repos;

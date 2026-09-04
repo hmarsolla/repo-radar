@@ -2,11 +2,14 @@
 
 use serde::{Deserialize, Serialize};
 use specta::Type;
-use tauri::State;
+use tauri::{AppHandle, Manager, State};
+use tauri_plugin_opener::OpenerExt;
 
+use repo_radar_core::db::maintenance;
 use repo_radar_core::model::Warning;
 
-use crate::error::CommandResult;
+use crate::boot::{self, Boot, BootStatus};
+use crate::error::{CommandError, CommandResult};
 use crate::state::AppState;
 
 /// Round-trips a value through the Rust↔TS boundary. Exists to prove the
@@ -30,11 +33,62 @@ pub fn ping(state: State<'_, AppState>, message: String) -> CommandResult<Pong> 
     })
 }
 
-/// Warnings raised while loading rule packs at startup (DESIGN §10.2). Wired
-/// up now so the [`Warning`] type is exercised across the boundary (M0-7);
-/// the scan surfaces per-repo warnings the same way from M1-8.
+/// Warnings raised while loading rule packs at startup (DESIGN §10.2).
+/// Returns an empty list in recovery mode (no core context).
 #[tauri::command]
 #[specta::specta]
-pub fn get_startup_warnings(state: State<'_, AppState>) -> CommandResult<Vec<Warning>> {
-    Ok(state.core.rules.load_warnings.clone())
+pub fn get_startup_warnings(app: AppHandle) -> CommandResult<Vec<Warning>> {
+    Ok(app
+        .try_state::<AppState>()
+        .map(|s| s.core.rules.load_warnings.clone())
+        .unwrap_or_default())
+}
+
+/// Startup outcome (M5-4). The frontend calls this before rendering: when
+/// `ok` is false it shows the recovery screen instead of the app.
+#[tauri::command]
+#[specta::specta]
+pub fn boot_status(boot: State<'_, Boot>) -> CommandResult<BootStatus> {
+    Ok(boot.status())
+}
+
+/// **Reset database** (FR-10.3). Clears every scanned repository, its health
+/// and classification data, all findings, the advisory database, and the
+/// outdated-version cache. Configured scan roots and preferences are kept.
+/// The UI confirms before calling this; it is also the recovery action on
+/// the fatal-error screen (DESIGN §15).
+///
+/// In recovery mode (the core never initialised) there is no live database
+/// to clear, so the `.db` files are deleted outright and the next launch
+/// starts from a clean file.
+#[tauri::command]
+#[specta::specta]
+pub fn reset_database(app: AppHandle, boot: State<'_, Boot>) -> CommandResult<()> {
+    match app.try_state::<AppState>() {
+        Some(state) => {
+            state.core.db.write(maintenance::reset_derived_data)?;
+            tracing::warn!("database reset — all derived data cleared");
+        }
+        None => {
+            boot::delete_db_files(&boot.data_dir).map_err(|e| CommandError::Internal {
+                message: format!("could not delete the database file: {e}"),
+            })?;
+            tracing::warn!("recovery reset — database files deleted; restart required");
+        }
+    }
+    Ok(())
+}
+
+/// **Open data folder** (FR-10.3) — reveal the OS data directory (which
+/// holds `repo-radar.db` and `logs/`) in the system file manager. Works in
+/// recovery mode too.
+#[tauri::command]
+#[specta::specta]
+pub fn open_data_folder(app: AppHandle, boot: State<'_, Boot>) -> CommandResult<()> {
+    let dir = boot.data_dir.clone();
+    app.opener()
+        .open_path(dir.to_string_lossy(), None::<&str>)
+        .map_err(|e| CommandError::Internal {
+            message: format!("could not open {}: {e}", dir.display()),
+        })
 }

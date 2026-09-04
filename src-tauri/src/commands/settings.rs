@@ -75,6 +75,45 @@ pub fn remove_scan_root(state: State<'_, AppState>, id: i64) -> CommandResult<()
     Ok(())
 }
 
+/// Enable or disable a scan root without discarding its scanned repos
+/// (FR-10.1). A disabled root is skipped by the next scan.
+#[tauri::command]
+#[specta::specta]
+pub fn set_scan_root_enabled(
+    state: State<'_, AppState>,
+    id: i64,
+    enabled: bool,
+) -> CommandResult<()> {
+    state
+        .core
+        .db
+        .write(|c| repos::set_scan_root_enabled(c, id, enabled))?;
+    Ok(())
+}
+
+/// Reorder scan roots (FR-10.1). `ordered_ids` is the full id list in the
+/// desired top-to-bottom order.
+#[tauri::command]
+#[specta::specta]
+pub fn reorder_scan_roots(state: State<'_, AppState>, ordered_ids: Vec<i64>) -> CommandResult<()> {
+    state
+        .core
+        .db
+        .write(|c| repos::reorder_scan_roots(c, &ordered_ids))?;
+    Ok(())
+}
+
+/// The built-in prune directories (FR-1.4). Shown read-only in Settings so
+/// the user can see what the "additional" list adds to.
+#[tauri::command]
+#[specta::specta]
+pub fn builtin_prune_dirs() -> CommandResult<Vec<String>> {
+    Ok(repo_radar_core::scan::discovery::DEFAULT_PRUNE_DIRS
+        .iter()
+        .map(|s| s.to_string())
+        .collect())
+}
+
 fn validate_scan_root(path: &str) -> CommandResult<()> {
     let meta = std::fs::metadata(path).map_err(|e| CommandError::Internal {
         message: format!("cannot access {path}: {e}"),

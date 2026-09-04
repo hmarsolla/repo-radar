@@ -23,8 +23,14 @@ pub enum Theme {
 #[serde(default, rename_all = "camelCase")]
 pub struct Settings {
     /// Directory names pruned during discovery and language stats (FR-1.4).
+    /// Added to the built-in [`DEFAULT_PRUNE_LIST`], not a replacement.
     pub prune_list: Vec<String>,
-    /// How often the scheduled advisory sync runs (DESIGN §13.2).
+    /// File extensions (no dot, lowercase) withheld from the prompt file
+    /// picker in addition to the content-sniffed binary check (FR-10.1).
+    pub excluded_extensions: Vec<String>,
+    /// How often the scheduled advisory sync runs (DESIGN §13.2). `0` means
+    /// **manual only** — the scheduler performs no automatic sync (FR-10.1,
+    /// "daily / manual only").
     pub sync_interval_hours: u32,
     /// Prompt token budget for the estimator (FR-9.4).
     pub token_budget: u32,
@@ -34,7 +40,10 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            prune_list: DEFAULT_PRUNE_LIST.iter().map(|s| s.to_string()).collect(),
+            // Empty by default: these are *added* to the built-in prune list
+            // (FR-10.1), not a replacement for it.
+            prune_list: Vec::new(),
+            excluded_extensions: Vec::new(),
             sync_interval_hours: 24,
             token_budget: 128_000,
             theme: Theme::System,
@@ -42,27 +51,7 @@ impl Default for Settings {
     }
 }
 
-/// Directories that are almost never worth walking into: dependency stores,
-/// build output, VCS internals, virtualenvs (FR-1.4).
-pub const DEFAULT_PRUNE_LIST: &[&str] = &[
-    "node_modules",
-    "target",
-    "dist",
-    "build",
-    "out",
-    "vendor",
-    ".git",
-    ".svn",
-    ".hg",
-    ".venv",
-    "venv",
-    "__pycache__",
-    ".mypy_cache",
-    ".pytest_cache",
-    ".gradle",
-    ".idea",
-    ".next",
-    ".nuxt",
-    ".cache",
-    "Pods",
-];
+// The built-in prune list is `repo_radar_core::scan::discovery::DEFAULT_PRUNE_DIRS`
+// — a single source of truth shared by discovery, language stats, and the
+// prompt file picker. `Settings::prune_list` adds to it (FR-10.1); the
+// `builtin_prune_dirs` command exposes the built-ins to the Settings UI.

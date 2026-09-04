@@ -37,7 +37,9 @@ impl std::fmt::Display for RelPath {
 /// The four package ecosystems v1 covers. Adding Java/.NET/PHP/Ruby later is
 /// a new variant plus a `LockfileParser` impl — nothing else in the
 /// pipeline changes (DESIGN §7.1).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Type)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, Type,
+)]
 pub enum Ecosystem {
     Npm,
     PyPI,

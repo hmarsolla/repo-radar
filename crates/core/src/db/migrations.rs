@@ -12,10 +12,13 @@ use crate::error::{CoreError, CoreResult, FatalError};
 
 /// The highest schema version this binary understands. Bump when adding a
 /// migration below.
-pub const CURRENT_VERSION: i64 = 1;
+pub const CURRENT_VERSION: i64 = 2;
 
 /// `(version, sql)` in ascending order. Each entry runs exactly once.
-const MIGRATIONS: &[(i64, &str)] = &[(1, include_str!("../../migrations/0001_init.sql"))];
+const MIGRATIONS: &[(i64, &str)] = &[
+    (1, include_str!("../../migrations/0001_init.sql")),
+    (2, include_str!("../../migrations/0002_scan_root_order.sql")),
+];
 
 /// Apply every migration not yet recorded in `schema_version`. Idempotent:
 /// calling it on an up-to-date database is a no-op.

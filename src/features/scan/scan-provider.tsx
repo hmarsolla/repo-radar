@@ -92,6 +92,7 @@ export function ScanProvider({ children }: { children: React.ReactNode }) {
         setState((s) => ({ ...s, running: false }));
         qc.invalidateQueries({ queryKey: ["repos"] });
         qc.invalidateQueries({ queryKey: ["dashboard"] });
+        qc.invalidateQueries({ queryKey: ["latestScan"] });
       }),
     );
     track(() =>

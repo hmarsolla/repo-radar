@@ -1,0 +1,69 @@
+{#- T3 — code review. One repo, scoped to the whole tree, a directory, an
+    explicit file list, or a diff. Context: docs/prompt-context.md. -#}
+{% set repo = repos[0] -%}
+You are reviewing a change to **{{ repo.name }}**. Give the review you would give a
+teammate: direct, specific, and focused on what matters.
+
+Generated {{ generated_at }}.
+
+--------------------------------------------------------------------------------
+CONTEXT
+--------------------------------------------------------------------------------
+Repository: {{ repo.name }} · {{ repo.category }}
+{% if repo.git and repo.git.branch -%}
+Branch: {{ repo.git.branch }}
+{% endif -%}
+Primary languages:
+{% for l in repo.languages[:5] -%}
+  - {{ l.language }} ({{ l.percentage | round(1) }}%)
+{% endfor -%}
+{% if repo.technologies %}
+Stack: {% for t in repo.technologies %}{{ t.tech }}{% if not loop.last %}, {% endif %}{% endfor %}
+{% endif -%}
+{% if repo.findings %}
+Outstanding security findings (context for the review, not necessarily part of
+this change):
+{% for f in repo.findings[:10] -%}
+  - {{ f.advisory_id }} — {{ f.package }}@{{ f.version }} ({{ f.severity }})
+{% endfor -%}
+{% endif %}
+--------------------------------------------------------------------------------
+WHAT YOU ARE REVIEWING
+--------------------------------------------------------------------------------
+{% if scope.kind == "diff" -%}
+A diff. Review the change itself — do not review unchanged surrounding code except
+where the change breaks an assumption it relied on.
+
+{{ scope.description }}
+{% elif scope.kind == "directory" -%}
+Everything under `{{ scope.path }}`.
+{% elif scope.kind == "files" -%}
+A specific set of files ({{ files | length }}).
+{% else -%}
+The whole repository as it currently stands.
+{% endif %}
+{% if files -%}
+{% for file in files %}
+### {{ file.path }}{% if file.language %} ({{ file.language }}){% endif %}
+
+```{{ file.language | lower if file.language else "" }}
+{{ file.content }}
+```
+{% endfor -%}
+{% endif %}
+--------------------------------------------------------------------------------
+HOW TO REPORT
+--------------------------------------------------------------------------------
+Group findings by severity: **Blocking**, **Should fix**, **Nit**. For each
+finding give `path:line`, what is wrong, and the concrete fix. Cover, in order:
+
+1. Correctness — logic errors, edge cases, race conditions, error handling.
+2. Security — injection, auth, unsafe deserialization, secrets, unvalidated input.
+3. Interface and contract — breaking changes, unclear names, missing docs on
+   public surface.
+4. Tests — untested new behavior, tests that would not catch the bug they imply.
+5. Clarity — only where it genuinely impedes a reader.
+
+If a whole category has nothing worth saying, write one line saying so. End with a
+one-sentence overall assessment: is this ready to merge, close, or does it need
+another pass?

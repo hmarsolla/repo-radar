@@ -7,11 +7,33 @@ import * as __TAURI_EVENT from "@tauri-apps/api/event";
 export const commands = {
 	ping: (message: string) => typedError<Pong, CommandError>(__TAURI_INVOKE("ping", { message })),
 	/**
-	 *  Warnings raised while loading rule packs at startup (DESIGN §10.2). Wired
-	 *  up now so the [`Warning`] type is exercised across the boundary (M0-7);
-	 *  the scan surfaces per-repo warnings the same way from M1-8.
+	 *  Startup outcome (M5-4). The frontend calls this before rendering: when
+	 *  `ok` is false it shows the recovery screen instead of the app.
+	 */
+	bootStatus: () => typedError<BootStatus, CommandError>(__TAURI_INVOKE("boot_status")),
+	/**
+	 *  Warnings raised while loading rule packs at startup (DESIGN §10.2).
+	 *  Returns an empty list in recovery mode (no core context).
 	 */
 	getStartupWarnings: () => typedError<Warning[], CommandError>(__TAURI_INVOKE("get_startup_warnings")),
+	/**
+	 *  **Reset database** (FR-10.3). Clears every scanned repository, its health
+	 *  and classification data, all findings, the advisory database, and the
+	 *  outdated-version cache. Configured scan roots and preferences are kept.
+	 *  The UI confirms before calling this; it is also the recovery action on
+	 *  the fatal-error screen (DESIGN §15).
+	 * 
+	 *  In recovery mode (the core never initialised) there is no live database
+	 *  to clear, so the `.db` files are deleted outright and the next launch
+	 *  starts from a clean file.
+	 */
+	resetDatabase: () => typedError<null, CommandError>(__TAURI_INVOKE("reset_database")),
+	/**
+	 *  **Open data folder** (FR-10.3) — reveal the OS data directory (which
+	 *  holds `repo-radar.db` and `logs/`) in the system file manager. Works in
+	 *  recovery mode too.
+	 */
+	openDataFolder: () => typedError<null, CommandError>(__TAURI_INVOKE("open_data_folder")),
 	/**
 	 *  Read settings from the store, falling back to defaults when the value is
 	 *  missing or unparseable.
@@ -28,6 +50,21 @@ export const commands = {
 	addScanRoot: (path: string) => typedError<ScanRoot, CommandError>(__TAURI_INVOKE("add_scan_root", { path })),
 	/**  Remove a scan root and everything derived from it (FK cascade). */
 	removeScanRoot: (id: number) => typedError<null, CommandError>(__TAURI_INVOKE("remove_scan_root", { id })),
+	/**
+	 *  Enable or disable a scan root without discarding its scanned repos
+	 *  (FR-10.1). A disabled root is skipped by the next scan.
+	 */
+	setScanRootEnabled: (id: number, enabled: boolean) => typedError<null, CommandError>(__TAURI_INVOKE("set_scan_root_enabled", { id, enabled })),
+	/**
+	 *  Reorder scan roots (FR-10.1). `ordered_ids` is the full id list in the
+	 *  desired top-to-bottom order.
+	 */
+	reorderScanRoots: (orderedIds: number[]) => typedError<null, CommandError>(__TAURI_INVOKE("reorder_scan_roots", { orderedIds })),
+	/**
+	 *  The built-in prune directories (FR-1.4). Shown read-only in Settings so
+	 *  the user can see what the "additional" list adds to.
+	 */
+	builtinPruneDirs: () => typedError<string[], CommandError>(__TAURI_INVOKE("builtin_prune_dirs")),
 	/**
 	 *  Start a scan of every enabled scan root. Returns the scan id immediately;
 	 *  the walk, analysis, and persistence run on a background thread and report
@@ -76,6 +113,20 @@ export const commands = {
 	 */
 	dashboardStats: () => typedError<DashboardStats, CommandError>(__TAURI_INVOKE("dashboard_stats")),
 	/**
+	 *  The most recent scan and its persisted warnings (DESIGN §14.4). `None`
+	 *  until a scan has run. The frontend uses it to tell "never scanned" from
+	 *  "scanned, found nothing", and to badge repos that produced warnings even
+	 *  after a reload.
+	 */
+	latestScanSummary: () => typedError<{
+	id: number,
+	status: ScanStatus,
+	repoCount: number | null,
+	startedAt: string,
+	finishedAt: string | null,
+	warnings: Warning[],
+} | null, CommandError>(__TAURI_INVOKE("latest_scan_summary")),
+	/**
 	 *  Start an advisory sync in the background. Returns immediately; progress
 	 *  via `sync:progress`, finish via `sync:complete`. A manual sync and the
 	 *  scheduled sync cannot overlap (the `sync_lock`, DESIGN §12.3).
@@ -94,6 +145,36 @@ export const commands = {
 	 *  automatic path (M2-21).
 	 */
 	liveQuery: (ecosystem: string, name: string, version: string) => typedError<LiveQueryResult, CommandError>(__TAURI_INVOKE("live_query", { ecosystem, name, version })),
+	/**
+	 *  Check every dependency of a repo against its package registry (npm, PyPI,
+	 *  crates.io, Go module proxy).
+	 * 
+	 *  **This contacts external registries.** The UI states so before the user
+	 *  invokes it (FR-8.7). `force_refresh` bypasses the 24-hour result cache
+	 *  (FR-8.5).
+	 * 
+	 *  Synchronous: the call blocks until every lookup resolves. The frontend
+	 *  shows a pending state meanwhile.
+	 */
+	checkOutdated: (repoId: number, forceRefresh: boolean) => typedError<OutdatedReport, CommandError>(__TAURI_INVOKE("check_outdated", { repoId, forceRefresh })),
+	/**  Every template available (built-ins + `<config>/prompts/*.j2`). */
+	listPromptTemplates: () => typedError<TemplateInfo[], CommandError>(__TAURI_INVOKE("list_prompt_templates")),
+	/**
+	 *  The file selection tree for one repo (FR-9.3). Every path the user cannot
+	 *  pick is still here, with the reason.
+	 */
+	promptFileListing: (repoId: number) => typedError<SelectionListing, CommandError>(__TAURI_INVOKE("prompt_file_listing", { repoId })),
+	/**
+	 *  Build the context, render the template, and return the full prompt plus a
+	 *  token estimate. Does not copy or export anything.
+	 */
+	generatePrompt: (req: GeneratePromptRequest) => typedError<GeneratedPrompt, CommandError>(__TAURI_INVOKE("generate_prompt", { req })),
+	/**
+	 *  Write a rendered prompt to a user-chosen path. Refuses any path inside a
+	 *  scan root or a scanned repository (FR-9.5, Principle 4) — the frontend
+	 *  picks the path with the save dialog; this is the backstop.
+	 */
+	exportPrompt: (path: string, contents: string) => typedError<null, CommandError>(__TAURI_INVOKE("export_prompt", { path, contents })),
 };
 
 /** Events */
@@ -111,6 +192,17 @@ export const events = {
 export type AdvisoryImpact = {
 	repoId: number,
 	repoName: string,
+};
+
+/**  The serializable view the `boot_status` command returns. */
+export type BootStatus = {
+	/**  `true` when analysis is available and the app can run normally. */
+	ok: boolean,
+	/**  Present when `!ok` — a human explanation for the recovery screen. */
+	failure: string | null,
+	schemaTooNew: boolean,
+	/**  Present after an automatic recovery (corrupt file quarantined). */
+	note: string | null,
 };
 
 /**  A `(label, count)` pair for a histogram or donut slice. */
@@ -167,6 +259,24 @@ export type EcosystemStatus = {
 };
 
 /**
+ *  Why a path is not offered for inclusion. Serialized tag-first so the UI
+ *  can switch on `reason` and show the detail.
+ */
+export type ExclusionReason = 
+/**  Inside a pruned directory (or the directory entry itself). */
+{ reason: "pruned" } | 
+/**  Matched `.gitignore` / `.git/info/exclude`. */
+{ reason: "gitignored" } | 
+/**  Extension is in the user's exclusion list (FR-10.1). */
+{ reason: "extensionExcluded"; ext: string } | 
+/**  Larger than `max_file_bytes`. */
+{ reason: "oversized"; bytes: number } | 
+/**  Contains a NUL byte or is not valid UTF-8 in its first 8 KiB. */
+{ reason: "binary" } | 
+/**  Could not be read (permissions, a broken symlink, a race). */
+{ reason: "unreadable"; detail: string };
+
+/**
  *  One finding for the Health tab (FR-6.9). Rendered from the stored data —
  *  the UI never recomputes a score.
  */
@@ -194,6 +304,37 @@ export type Freshness =
 "Stale" | 
 /**  Older than 30 days. */
 "VeryStale";
+
+export type GeneratePromptRequest = {
+	templateId: string,
+	/**
+	 *  One id for a single-repo template, several for a cross-repo one. The
+	 *  first is the repo files are embedded from.
+	 */
+	repoIds: number[],
+	scope: ScopeContext,
+	/**
+	 *  Repo-relative paths (within the first repo) to embed. The frontend's
+	 *  checkbox tree produces this; the backend re-checks every exclusion.
+	 */
+	selectedPaths?: string[],
+};
+
+export type GeneratedPrompt = {
+	/**
+	 *  The full rendered prompt — shown to the user before any copy or
+	 *  export (FR-9.6).
+	 */
+	prompt: string,
+	/**  `chars / 4`, always labelled an estimate in the UI (FR-9.4). */
+	estimatedTokens: number,
+	/**  The configured budget, for the over-budget warning. */
+	tokenBudget: number,
+	includedFiles: number,
+	/**  Files that were asked for but withheld, each with its reason. */
+	skippedFiles: SkippedFileInfo[],
+	templateName: string,
+};
 
 /**
  *  Per-language aggregate for a repo (FR-2.1). Never a file list — memory
@@ -226,6 +367,68 @@ export type MalCoverage =
  */
 "Thin";
 
+export type OutdatedEntry = {
+	/**  OSV/registry ecosystem id (`npm`, `PyPI`, `crates.io`, `Go`). */
+	ecosystem: string,
+	/**  Normalized name (the cache key). */
+	name: string,
+	/**  Name as written in the manifest, for display. */
+	rawName: string,
+	currentVersion: string,
+	/**
+	 *  Latest **stable** version from the registry, or `None` when the
+	 *  lookup failed or the package is unknown.
+	 */
+	latestVersion: string | null,
+	status: OutdatedStatus,
+	isDirect: boolean,
+	/**  `runtime` | `dev` | `build` | `optional` | `peer`. */
+	scope: string,
+	/**  Repo-relative manifest this dependency came from (FR-4.7). */
+	manifestPath: string,
+	/**
+	 *  RFC3339 timestamp of the registry lookup the latest version came
+	 *  from (may be up to `CACHE_TTL_HOURS` old — the UI shows the age,
+	 *  FR-8.5).
+	 */
+	checkedAt: string,
+	/**
+	 *  True when `latest_version` came from `outdated_cache` rather than a
+	 *  fresh request in this run.
+	 */
+	fromCache: boolean,
+	/**  Registry error for this package, if the lookup failed. */
+	error: string | null,
+};
+
+export type OutdatedReport = {
+	repoId: number,
+	/**  When this report was assembled. */
+	generatedAt: string,
+	/**  One row per distinct `(ecosystem, name, version)` in the repo. */
+	entries: OutdatedEntry[],
+	/**
+	 *  Packages whose latest version could not be fetched this run (network
+	 *  failures). Surfaced so a partial result is not mistaken for a clean
+	 *  bill of health.
+	 */
+	failed: string[],
+};
+
+/**
+ *  How far behind a dependency is. Derived by comparing the installed
+ *  version's `(major, minor, patch)` against the registry's latest under the
+ *  ecosystem's own version scheme (never a shared code path — DESIGN §8.5).
+ */
+export type OutdatedStatus = 
+/**  Installed version is >= the registry's latest. */
+"upToDate" | "outdatedPatch" | "outdatedMinor" | "outdatedMajor" | 
+/**
+ *  A version string would not parse, or the registry lookup failed — we
+ *  could not decide. Never conflated with `UpToDate` (FR-4.8 spirit).
+ */
+"unknown";
+
 /**
  *  Round-trips a value through the Rust↔TS boundary. Exists to prove the
  *  binding pipeline end to end (M0-5): change this struct in Rust and the
@@ -236,6 +439,13 @@ export type Pong = {
 	schema_version: number,
 	pid: number,
 };
+
+/**  How many repos a template expects. */
+export type RepoArity = 
+/**  Exactly one repo (T2, T3). */
+"single" | 
+/**  Two or more repos (T1). */
+"multi";
 
 export type RepoDetail = {
 	repo: RepoRecord,
@@ -387,6 +597,25 @@ export type ScanRoot = {
 	enabled: boolean,
 	/**  RFC 3339 timestamp. */
 	added_at: string,
+	/**  Display order in the settings list (FR-10.1). Lower sorts first. */
+	position: number,
+};
+
+export type ScanStatus = "running" | "complete" | "cancelled" | "failed";
+
+/**
+ *  A summary of the most recent scan, for the frontend's empty/degraded
+ *  states (DESIGN §14.4): it tells "never scanned" from "scanned, found
+ *  nothing", and carries the persisted warning list so a repo with warnings
+ *  stays distinguishable after a reload (M1-8, M5-4).
+ */
+export type ScanSummary = {
+	id: number,
+	status: ScanStatus,
+	repoCount: number | null,
+	startedAt: string,
+	finishedAt: string | null,
+	warnings: Warning[],
 };
 
 /**  `scan:warning` — a recoverable problem, surfaced as it occurs. */
@@ -395,14 +624,68 @@ export type ScanWarning = {
 	warning: Warning,
 };
 
+/**
+ *  What the user selected to include (DESIGN §11.2). Also a Tauri command
+ *  argument, so this one is camelCase: templates see `scope.kind` as
+ *  `wholeRepo | directory | files | diff`.
+ */
+export type ScopeContext = 
+/**  Everything selectable in the repo. */
+{ kind: "wholeRepo" } | 
+/**  A single subtree. */
+{ kind: "directory"; path: string } | 
+/**  An explicit list of files. */
+{ kind: "files"; paths: string[] } | 
+/**  A diff supplied as text (e.g. `git diff` output). */
+{ kind: "diff"; description: string };
+
+/**  One row in the selection tree. */
+export type SelectableFile = {
+	/**  Repo-relative, `/`-separated. */
+	path: string,
+	isDir: boolean,
+	bytes: number,
+	language: string | null,
+	/**  `None` when the file is selectable; `Some` explains why it is not. */
+	excluded: ExclusionReason | null,
+};
+
+export type SelectionListing = {
+	repoRoot: string,
+	/**
+	 *  Sorted by path. Directories that were pruned appear once, with
+	 *  `excluded = Pruned`, and their contents are not listed.
+	 */
+	files: SelectableFile[],
+	/**  `true` when `max_entries` was hit and the listing is incomplete. */
+	truncated: boolean,
+};
+
 export type Settings = {
-	/**  Directory names pruned during discovery and language stats (FR-1.4). */
+	/**
+	 *  Directory names pruned during discovery and language stats (FR-1.4).
+	 *  Added to the built-in [`DEFAULT_PRUNE_LIST`], not a replacement.
+	 */
 	pruneList?: string[],
-	/**  How often the scheduled advisory sync runs (DESIGN §13.2). */
+	/**
+	 *  File extensions (no dot, lowercase) withheld from the prompt file
+	 *  picker in addition to the content-sniffed binary check (FR-10.1).
+	 */
+	excludedExtensions?: string[],
+	/**
+	 *  How often the scheduled advisory sync runs (DESIGN §13.2). `0` means
+	 *  **manual only** — the scheduler performs no automatic sync (FR-10.1,
+	 *  "daily / manual only").
+	 */
 	syncIntervalHours?: number,
 	/**  Prompt token budget for the estimator (FR-9.4). */
 	tokenBudget?: number,
 	theme?: Theme,
+};
+
+export type SkippedFileInfo = {
+	path: string,
+	reason: ExclusionReason,
 };
 
 /**  `sync:complete` — triggers a findings refresh in the UI. */
@@ -446,6 +729,23 @@ export type TechDetail = {
 	kind: string,
 	evidence: string[],
 };
+
+/**  One entry in the template picker. */
+export type TemplateInfo = {
+	/**  Stable id — the file stem. Passed back to [`load_source`]. */
+	id: string,
+	name: string,
+	description: string,
+	source: TemplateSource,
+	arity: RepoArity,
+	/**
+	 *  `true` when this template embeds file bodies (T2/T3) and therefore
+	 *  drives the file picker; `false` for metadata-only comparisons (T1).
+	 */
+	usesFiles: boolean,
+};
+
+export type TemplateSource = "builtIn" | "user";
 
 export type Theme = "light" | "dark" | "system";
 

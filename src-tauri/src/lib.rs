@@ -2,6 +2,7 @@
 //! owns [`AppState`], exposes commands, emits events, and constructs the
 //! injected [`Paths`]. All analysis logic lives in the core crate.
 
+mod boot;
 mod commands;
 mod error;
 mod events;
@@ -10,9 +11,7 @@ mod scan_reporter;
 mod settings;
 mod state;
 
-use std::sync::Arc;
-
-use repo_radar_core::{CoreContext, Paths};
+use repo_radar_core::Paths;
 use tauri::Manager;
 use tauri_specta::{collect_commands, collect_events, Builder};
 
@@ -35,22 +34,34 @@ pub(crate) fn specta_builder() -> Builder<tauri::Wry> {
         .dangerously_cast_bigints_to_number()
         .commands(collect_commands![
             commands::system::ping,
+            commands::system::boot_status,
             commands::system::get_startup_warnings,
+            commands::system::reset_database,
+            commands::system::open_data_folder,
             commands::settings::get_settings,
             commands::settings::set_settings,
             commands::settings::list_scan_roots,
             commands::settings::add_scan_root,
             commands::settings::remove_scan_root,
+            commands::settings::set_scan_root_enabled,
+            commands::settings::reorder_scan_roots,
+            commands::settings::builtin_prune_dirs,
             commands::repos::scan_start,
             commands::repos::scan_cancel,
             commands::repos::list_repos,
             commands::repos::get_repo_detail,
             commands::repos::set_repo_category,
             commands::repos::dashboard_stats,
+            commands::repos::latest_scan_summary,
             commands::advisories::sync_advisories,
             commands::advisories::get_sync_status,
             commands::advisories::list_advisory_impact,
             commands::advisories::live_query,
+            commands::outdated::check_outdated,
+            commands::prompts::list_prompt_templates,
+            commands::prompts::prompt_file_listing,
+            commands::prompts::generate_prompt,
+            commands::prompts::export_prompt,
         ])
         .events(collect_events![
             events::ScanProgress,
@@ -97,6 +108,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_store::Builder::new().build())
         .invoke_handler(builder.invoke_handler())
         .setup(move |app| {
@@ -106,14 +118,21 @@ pub fn run() {
             logging::init(&paths);
             tracing::info!(version = env!("CARGO_PKG_VERSION"), "repo-radar starting");
 
-            let core: Arc<CoreContext> = CoreContext::new(paths).map_err(|e| {
-                tracing::error!(error = %e, "failed to initialise core context");
-                e
-            })?;
-            app.manage(AppState::new(core));
-
-            // Scheduled advisory sync (DESIGN §13.2, M2-15).
-            commands::advisories::spawn_scheduler(app.handle().clone());
+            // Startup never aborts the window: on a fatal database error the
+            // app still comes up and the frontend shows the recovery screen
+            // (M5-4). A corrupt file self-heals via quarantine-and-retry.
+            let boot = boot::build(paths);
+            if let Some(core) = boot.core.clone() {
+                app.manage(AppState::new(core));
+                // Scheduled advisory sync (DESIGN §13.2, M2-15).
+                commands::advisories::spawn_scheduler(app.handle().clone());
+            } else {
+                tracing::error!(
+                    failure = boot.failure.as_deref().unwrap_or(""),
+                    "core context unavailable — starting in recovery mode"
+                );
+            }
+            app.manage(boot);
 
             Ok(())
         })

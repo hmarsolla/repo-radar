@@ -435,49 +435,51 @@ Goal: point the app at a folder and see real repositories with real git and lang
 
 ## M4 — Prompts
 
-- [ ] **M4-1 · Prompt context and rendering** · Size: M · Deps: M3-3, M2-18
+- [x] **M4-1 · Prompt context and rendering** · Size: M · Deps: M3-3, M2-18
   Refs: FR-9.2, DESIGN §11.1
 
   `PromptContext` serde struct; `minijinja` rendering. Built-ins ship as `.j2` in `assets/prompts/` and run through the same path as user templates — no privileged built-in path.
 
   **Done when:** A template renders with a fully populated context including advisory freshness.
 
-- [ ] **M4-2 · Built-in templates** · Size: L · Deps: M4-1
+- [~] **M4-2 · Built-in templates** · Size: L · Deps: M4-1
   Refs: FR-9.1
 
   T1 cross-repo similarity (N repos), T2 performance & security opportunities (1 repo, with findings and dependency annotations), T3 code review (1 repo, scoped to whole/dir/files/diff). T2 must instruct the model to distinguish confirmed from speculative issues.
 
   **Done when:** Each template produces a coherent prompt validated by actually pasting it into an LLM and confirming the response is on-target. These are the product's output; review them as prose, not just as code that runs.
 
-- [ ] **M4-3 · User templates** · Size: S · Deps: M4-1
+  _Status: all three written (`crates/core/assets/prompts/*.j2`) and rendering under `tests/prompt_templates.rs`. Still needs the human LLM paste-test before this box is checked._
+
+- [x] **M4-3 · User templates** · Size: S · Deps: M4-1
   Refs: FR-9.2
 
   Load from `<config>/prompts/*.j2`; document the context object.
 
   **Done when:** A user template appears in the picker and renders; context documentation is written.
 
-- [ ] **M4-4 · File selection** · Size: L · Deps: M4-1
+- [x] **M4-4 · File selection** · Size: L · Deps: M4-1
   Refs: FR-9.3, DESIGN §11.2
 
   Checkbox tree. Auto-exclude binaries (**content-sniffed, not extension-guessed**), oversized files (256 KB default), gitignored files, and pruned dirs — each shown with its reason rather than silently dropped.
 
   **Done when:** Exclusions are visible and explained; a binary file with a `.txt` extension is still excluded.
 
-- [ ] **M4-5 · Token estimation** · Size: S · Deps: M4-4
+- [x] **M4-5 · Token estimation** · Size: S · Deps: M4-4
   Refs: FR-9.4
 
   `chars / 4`, live, against a configurable budget. Labeled as an estimate. Warns on exceed; does not block.
 
   **Done when:** The estimate updates live and over-budget warns without preventing use.
 
-- [ ] **M4-6 · Preview, copy, export** · Size: M · Deps: M4-2, M4-5
+- [x] **M4-6 · Preview, copy, export** · Size: M · Deps: M4-2, M4-5
   Refs: FR-9.5–9.7, DESIGN §11.4
 
   Full preview before any copy or export. Clipboard plugin; export via dialog to a user-chosen path only.
 
   **Done when:** The full prompt is visible before copying — these may contain proprietary source and the user must see what they are about to send to a third party — and export can never write inside a scanned repo.
 
-- [ ] **M4-7 · Phase 2 seam** · Size: S · Deps: M4-1
+- [x] **M4-7 · Phase 2 seam** · Size: S · Deps: M4-1
   Refs: PRD H1, H3, DESIGN §11.5
 
   Define `LlmProvider` with no implementation. Verify nothing in generation assumes the clipboard is the destination.
@@ -488,31 +490,87 @@ Goal: point the app at a folder and see real repositories with real git and lang
 
 ## M5 — Polish and ship
 
-- [ ] **M5-1 · Outdated dependency check (backend)** · Size: L · Deps: M2-10
+- [x] **M5-1 · Outdated dependency check (backend)** · Size: L · Deps: M2-10
   Refs: FR-8.1–8.5
 
   Registry lookups (npm, PyPI JSON, crates.io, Go proxy), batched where supported, rate-limited, descriptive User-Agent. Cached in `outdated_cache` with a 24-hour reuse window. Pre-releases excluded from "latest" unless the installed version is itself a pre-release.
 
   **Done when:** A repo check returns correct patch/minor/major deltas and the cache is respected.
 
-- [ ] **M5-2 · Outdated check UI** · Size: S · Deps: M5-1
+  _`crates/core/src/outdated.rs`: `check_repo_outdated(db, repo_id, force)` →
+  `OutdatedReport`. Per-ecosystem registry parsers (pure, unit-tested against
+  captured JSON shapes), bounded fan-out (8 workers) with a per-host throttle
+  (crates.io 1 req/s). `classify_bump` compares under each ecosystem's own
+  `VersionScheme`; unparseable → `Unknown`, never `UpToDate`. Cache honored +
+  forced-refresh bypass covered by tests. Latest = **stable**; a prerelease
+  pin that is behind stable still reports the gap, one ahead of stable reads
+  up-to-date (deliberate simplification, documented in-module). Command
+  `check_outdated` in `src-tauri/src/commands/outdated.rs` — the sole caller,
+  no scheduler/scan hook._
+
+- [~] **M5-2 · Outdated check UI** · Size: S · Deps: M5-1
   Refs: FR-8.1, FR-8.6, FR-8.7
 
   **Done when:** The action is reachable **only** by explicit click, the UI states beforehand that it contacts external registries, and outdated-ness demonstrably does not move the health score. Conflating maintenance lag with security risk would corrupt the signal the score exists to carry.
 
-- [ ] **M5-3 · Settings screen** · Size: M · Deps: M0-9
+  _`src/features/repos/outdated-tab.tsx`, new "Updates" tab on repo detail.
+  `useMutation` (no auto-run) → explicit click only. Pre-check panel names the
+  four registries and says version lag does not affect health; result view
+  repeats it. Partial results (`report.failed`) render a "not a clean bill"
+  banner. Typecheck/lint/clippy/tests green; **live click-through still needs
+  `tauri dev` with a scanned repo** — same web-preview gate as the M4 Prompts
+  UI._
+
+- [~] **M5-3 · Settings screen** · Size: M · Deps: M0-9
   Refs: FR-10.1, FR-10.3
 
   Scan roots, prune list, sync schedule, token budget, theme, **Reset database** (confirmed), **Open data folder**.
 
   **Done when:** Every setting round-trips and reset clears all derived data.
 
-- [ ] **M5-4 · Empty, error, and degraded states** · Size: M · Deps: M3-6, M2-22
+  _Migration `0002` adds `scan_roots.position` (reorder). `db/maintenance.rs`
+  `reset_derived_data` — deletes repos + advisories (+ cascades), outdated
+  cache, scans, sync_log; keeps scan_roots + schema_version; `VACUUM`s;
+  covered by a test. New commands: `set_scan_root_enabled`,
+  `reorder_scan_roots`, `builtin_prune_dirs`, `reset_database`,
+  `open_data_folder` (opener `allow-open-path` capability added). `prune_list`
+  is now **additional** (default `[]`, merged onto the core `DEFAULT_PRUNE_DIRS`)
+  and is finally wired into the scan pipeline (`scan_start` extends
+  `ctx.discovery.prune_dirs`) as well as the prompt picker. New
+  `Settings.excluded_extensions` → `SelectionOptions` + `ExclusionReason::
+  ExtensionExcluded`. Scheduler now reads `sync_interval_hours` (`0` = manual
+  only). `settings-view.tsx` rewritten with all sections + two-click reset
+  confirm. typecheck/eslint/`cargo clippy --workspace`/`cargo test --workspace`
+  green; **live command round-trips need `tauri dev`** (web preview has no IPC).
+  `theme` still persists via `localStorage` (ThemeProvider), not the settings
+  blob — left as-is, it works._
+
+- [~] **M5-4 · Empty, error, and degraded states** · Size: M · Deps: M3-6, M2-22
   Refs: DESIGN §14.4, §15
 
   All seven states from DESIGN §14.4, plus the fatal-error screen offering reset and open-data-folder.
 
   **Done when:** Each state is reachable in a test build and none is a blank screen or a raw error string.
+
+  _§14.4 states: (1) no scan roots → `Onboarding` (existing); (2) scan running,
+  no results → "Scanning…" message; (3) scan complete, 0 repos → distinct
+  copy driven by new `latest_scan_summary` command / `db::scans::latest_scan`
+  (`ScanSummary`); (4) advisories never synced → unknown health (existing,
+  health-tab + repo-list badge + advisories-view + freshness indicator); (5)
+  network unavailable → sync-failure banner (existing) + M5-2 outdated error
+  banner; (6) repo with warnings → new `ScanWarnings` component, a banner in
+  `ReposView` and a per-repo card in `RepoDetailView`, fed by the persisted
+  `scans.warnings` (survives reload — M1-8 was session-only before). Fatal
+  screen: `src-tauri/src/boot.rs` — `Boot` managed state, `boot_status`
+  command; corrupt DB self-heals (quarantine `repo-radar.db.corrupt-*` +
+  retry once → dismissible `BootNote`); `SchemaTooNew` and unrecoverable
+  failures → `FatalErrorScreen` (`BootGate` in `App.tsx`), which also catches
+  mid-session tier-`fatal` command errors via the query/mutation cache
+  `onError` → `lib/fatal.ts`. `reset_database` / `open_data_folder` work in
+  recovery mode (no `AppState`) via file-level ops. typecheck / eslint /
+  `cargo clippy --workspace` / `cargo test --workspace` green. **Live exercise
+  of states 3/6/7 needs `tauri dev`** (corrupt-file recovery, a real
+  0-repo/warnings scan)._
 
 - [ ] **M5-5 · Performance pass** · Size: M · Deps: M3-6
   Refs: PRD §11, DESIGN §17
@@ -521,6 +579,10 @@ Goal: point the app at a folder and see real repositories with real git and lang
 
   **Done when:** All targets are met, or a miss is documented with a decision. Do not implement the deferred optimizations in DESIGN §17 unless measurement demands them.
 
+  _Not code — a measurement pass on target hardware. Step-by-step checklist
+  (all 10 PRD §11 targets, how to measure each, where to write results back):
+  [docs/release-checklist.md](docs/release-checklist.md) § M5-5._
+
 - [ ] **M5-6 · Installers** · Size: L · Deps: M0-8
   Refs: DESIGN §19
 
@@ -528,11 +590,25 @@ Goal: point the app at a folder and see real repositories with real git and lang
 
   **Done when:** Each installs and launches on a clean machine or VM. Signing is deferred (DESIGN §19) — decide before any public distribution.
 
-- [ ] **M5-7 · Documentation** · Size: M · Deps: all
+  _`tauri.conf.json` already builds all targets. Per-artifact build + clean-VM
+  verification + first-run smoke test + signing decision checklist:
+  [docs/release-checklist.md](docs/release-checklist.md) § M5-6._
+
+- [x] **M5-7 · Documentation** · Size: M · Deps: all
 
   README with install, first-run, and the network policy stated plainly. Rule pack authoring guide. Prompt context reference.
 
   **Done when:** Someone else can build, run, and extend the rules without reading the source.
+
+  _[README.md](README.md) rewritten: enumerated network policy (all 3 outbound
+  cases), Installing section (per-platform artifacts + unsigned-warning
+  guidance), 5-step First run walkthrough, Configuring/extending section with
+  per-OS config paths. New [docs/rule-packs.md](docs/rule-packs.md) — full
+  authoring guide: where user packs live per OS, merge-by-id semantics,
+  `[settings]` replacement, every signal kind + matching rules, the
+  `has_manifest_without_entrypoint` predicate (the whole closed set), tech
+  rules, a worked override example. [docs/prompt-context.md](docs/prompt-context.md)
+  (from M4) refreshed for the M5-3 extension-exclusion setting._
 
 ---
 

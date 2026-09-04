@@ -22,6 +22,8 @@ pub struct ScanRoot {
     pub enabled: bool,
     /// RFC 3339 timestamp.
     pub added_at: String,
+    /// Display order in the settings list (FR-10.1). Lower sorts first.
+    pub position: i64,
 }
 
 fn row_to_root(row: &rusqlite::Row<'_>) -> rusqlite::Result<ScanRoot> {
@@ -30,13 +32,15 @@ fn row_to_root(row: &rusqlite::Row<'_>) -> rusqlite::Result<ScanRoot> {
         path: row.get("path")?,
         enabled: row.get::<_, i64>("enabled")? != 0,
         added_at: row.get("added_at")?,
+        position: row.get("position")?,
     })
 }
 
-/// Every configured scan root, oldest first.
+/// Every configured scan root, in the user's chosen order (FR-10.1).
 pub fn list_scan_roots(conn: &Connection) -> CoreResult<Vec<ScanRoot>> {
-    let mut stmt =
-        conn.prepare("SELECT id, path, enabled, added_at FROM scan_roots ORDER BY added_at, id")?;
+    let mut stmt = conn.prepare(
+        "SELECT id, path, enabled, added_at, position FROM scan_roots ORDER BY position, id",
+    )?;
     let rows = stmt
         .query_map([], row_to_root)?
         .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -44,11 +48,12 @@ pub fn list_scan_roots(conn: &Connection) -> CoreResult<Vec<ScanRoot>> {
 }
 
 /// Add a scan root. Idempotent on `path` (the column is `UNIQUE`): adding an
-/// existing path returns the existing row rather than erroring.
+/// existing path returns the existing row rather than erroring. New roots
+/// land at the end of the list.
 pub fn add_scan_root(conn: &Connection, path: &str) -> CoreResult<ScanRoot> {
     if let Some(existing) = conn
         .query_row(
-            "SELECT id, path, enabled, added_at FROM scan_roots WHERE path = ?1",
+            "SELECT id, path, enabled, added_at, position FROM scan_roots WHERE path = ?1",
             [path],
             row_to_root,
         )
@@ -58,9 +63,14 @@ pub fn add_scan_root(conn: &Connection, path: &str) -> CoreResult<ScanRoot> {
     }
 
     let added_at = chrono::Utc::now().to_rfc3339();
+    let next_pos: i64 = conn.query_row(
+        "SELECT COALESCE(MAX(position), 0) + 1 FROM scan_roots",
+        [],
+        |r| r.get(0),
+    )?;
     conn.execute(
-        "INSERT INTO scan_roots (path, enabled, added_at) VALUES (?1, 1, ?2)",
-        rusqlite::params![path, added_at],
+        "INSERT INTO scan_roots (path, enabled, added_at, position) VALUES (?1, 1, ?2, ?3)",
+        rusqlite::params![path, added_at, next_pos],
     )?;
     let id = conn.last_insert_rowid();
     Ok(ScanRoot {
@@ -68,7 +78,23 @@ pub fn add_scan_root(conn: &Connection, path: &str) -> CoreResult<ScanRoot> {
         path: path.to_string(),
         enabled: true,
         added_at,
+        position: next_pos,
     })
+}
+
+/// Rewrite scan-root ordering: each id in `ordered_ids` takes its index as
+/// its `position` (FR-10.1). Ids not present are left untouched; unknown ids
+/// are ignored.
+pub fn reorder_scan_roots(conn: &mut Connection, ordered_ids: &[i64]) -> CoreResult<()> {
+    let tx = conn.transaction()?;
+    for (idx, id) in ordered_ids.iter().enumerate() {
+        tx.execute(
+            "UPDATE scan_roots SET position = ?2 WHERE id = ?1",
+            rusqlite::params![id, idx as i64],
+        )?;
+    }
+    tx.commit()?;
+    Ok(())
 }
 
 /// Remove a scan root by id. Cascades to its repos and their children

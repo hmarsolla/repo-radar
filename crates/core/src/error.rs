@@ -49,6 +49,13 @@ pub enum CoreError {
     /// JSON (de)serialization of a stored blob or a config file.
     #[error("serialization error: {0}")]
     Json(#[from] serde_json::Error),
+
+    /// Prompt generation failed: a template did not parse, rendering raised
+    /// an error, or a referenced repo/file could not be assembled into the
+    /// context (FR-9). Recoverable — the user fixes the template or the
+    /// selection and retries.
+    #[error("prompt generation failed: {0}")]
+    Prompt(String),
 }
 
 /// Tier 3 — fatal. Reaching one of these means the UI drops to the

@@ -2,6 +2,7 @@ import {
   LayoutDashboard,
   FolderGit2,
   ShieldAlert,
+  Sparkles,
   Settings,
   type LucideIcon,
 } from "lucide-react";
@@ -18,5 +19,6 @@ export const NAV_ITEMS: NavItem[] = [
   { to: "/", label: "Dashboard", icon: LayoutDashboard, end: true },
   { to: "/repos", label: "Repositories", icon: FolderGit2 },
   { to: "/advisories", label: "Advisories", icon: ShieldAlert },
+  { to: "/prompts", label: "Prompts", icon: Sparkles },
   { to: "/settings", label: "Settings", icon: Settings },
 ];
