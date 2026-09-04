@@ -8,7 +8,7 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
-    "bindings": "cargo run --quiet --manifest-path src-tauri/Cargo.toml --bin gen-bindings",
+    "bindings": "cargo run --quiet --manifest-path src-tauri/Cargo.toml --bin gen-bindings --features gen-bindings",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit"
   },

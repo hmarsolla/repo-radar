@@ -17,12 +17,22 @@ default-run = "repo-radar"
 name = "repo_radar_lib"
 crate-type = ["cdylib", "rlib"]
 
+[features]
+# Gates the `gen-bindings` bin target so a plain `cargo build`/`tauri build`
+# never compiles (and the bundler never tries to ship) a second binary —
+# `tauri build --target universal-apple-darwin` only lipo-merges the main
+# binary named by `mainBinaryName`, so an extra bin target that DOES get
+# built ends up missing from the universal output dir and fails bundling.
+gen-bindings = []
+
 # Regenerates src/bindings.ts. Run in CI, then `git diff --exit-code`
 # (M0-8). Kept out of the library so `cargo test` never links a Tauri
-# runtime into a test harness.
+# runtime into a test harness. `required-features` keeps it out of ordinary
+# `cargo build` / `tauri build` runs entirely (see `[features]` above).
 [[bin]]
 name = "gen-bindings"
 path = "src/bin/gen_bindings.rs"
+required-features = ["gen-bindings"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
