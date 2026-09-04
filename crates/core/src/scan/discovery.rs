@@ -231,28 +231,42 @@ fn normalize(p: &Path) -> String {
     abs.strip_prefix(r"\\?\").unwrap_or(&abs).replace('\\', "/")
 }
 
+/// `WalkParallel`'s directory-read errors wrap the underlying `io::Error` at
+/// varying depths (`WithDepth { err: WithPath { err: Io(..) } }` for a
+/// directory that fails to open, vs. `WithPath { err: Io(..) }` for a
+/// single bad entry within an otherwise-readable directory) — the exact
+/// nesting is an implementation detail of the `ignore` crate, not something
+/// safe to pattern-match on directly. `io_error()`/`find_path()` recurse
+/// through every wrapper variant instead, so classification doesn't depend
+/// on which shape a given failure happens to produce.
 fn classify_walk_error(err: &ignore::Error) -> Warning {
-    let (kind, scope) = match err {
-        ignore::Error::WithPath { path, err } => {
-            let inner_is_permission = matches!(
-                err.io_error().map(std::io::Error::kind),
-                Some(std::io::ErrorKind::PermissionDenied)
-            );
-            (
-                if inner_is_permission {
-                    WarningKind::PermissionDenied
-                } else {
-                    WarningKind::Other
-                },
-                WarningScope::File(normalize(path)),
-            )
-        }
-        ignore::Error::Io(io) if io.kind() == std::io::ErrorKind::PermissionDenied => {
-            (WarningKind::PermissionDenied, WarningScope::Scan)
-        }
-        _ => (WarningKind::Other, WarningScope::Scan),
+    let is_permission = matches!(
+        err.io_error().map(std::io::Error::kind),
+        Some(std::io::ErrorKind::PermissionDenied)
+    );
+    let kind = if is_permission {
+        WarningKind::PermissionDenied
+    } else {
+        WarningKind::Other
+    };
+    let scope = match find_path(err) {
+        Some(path) => WarningScope::File(normalize(path)),
+        None => WarningScope::Scan,
     };
     Warning::new(scope, kind, format!("discovery: {err}"))
+}
+
+/// Recurse through `ignore::Error`'s wrapper variants to find the path a
+/// walk error is attached to, mirroring how the crate's own `io_error()`
+/// recurses to find the underlying `io::Error`.
+fn find_path(err: &ignore::Error) -> Option<&Path> {
+    match err {
+        ignore::Error::WithPath { path, .. } => Some(path),
+        ignore::Error::WithDepth { err, .. } => find_path(err),
+        ignore::Error::WithLineNumber { err, .. } => find_path(err),
+        ignore::Error::Partial(errs) if errs.len() == 1 => find_path(&errs[0]),
+        _ => None,
+    }
 }
 
 /// Convenience for callers with more than one root.

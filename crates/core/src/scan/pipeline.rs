@@ -164,8 +164,12 @@ pub fn run_scan(
         }
     }
 
-    // Parents (no parent_path) before children, each group path-sorted, so a
-    // child's parent row always exists by the time it is written.
+    // Path-sorted (within parent/child groups) so `dedup_by` below collapses
+    // duplicate paths. Parent-before-child ordering here does NOT by itself
+    // guarantee a child is written after its parent — analysis runs in
+    // parallel and messages reach the writer in completion order, not this
+    // Vec's order. The writer (`writer_loop`) enforces that guarantee by
+    // deferring every child write until all non-child writes are flushed.
     work.sort_by(|a, b| {
         a.identity
             .parent_path
@@ -449,6 +453,16 @@ fn analyze_repo_inner(
 
 /// The single writer thread: drains analyses, batches them into
 /// transactions, and reports each repo as it lands.
+///
+/// Submodule children are held back from the streaming `batch` and written
+/// only after every non-child message has been flushed (M1-2/M1-9). Analysis
+/// runs in parallel (`work.par_iter()`), so messages reach this loop in
+/// completion order, not discovery order — a child can easily finish (and
+/// arrive) before its own parent. Looking up `parent_repo_id` for a child
+/// that hasn't been written yet silently orphans it (`parent_repo_id` =
+/// NULL), which is exactly the race this deferral avoids: by the time
+/// children are flushed, every parent's `WorkItem` has already been through
+/// this same channel and been committed.
 fn writer_loop(
     db: &Db,
     rx: mpsc::Receiver<AnalysisMsg>,
@@ -461,10 +475,15 @@ fn writer_loop(
     let mut warnings: Vec<Warning> = Vec::new();
     let mut touched: Vec<(i64, String)> = Vec::new();
     let mut batch: Vec<AnalysisMsg> = Vec::with_capacity(BATCH);
+    let mut children: Vec<AnalysisMsg> = Vec::new();
 
     loop {
         match rx.recv() {
             Ok(msg) => {
+                if msg.identity.parent_path.is_some() {
+                    children.push(msg);
+                    continue;
+                }
                 batch.push(msg);
                 if batch.len() >= BATCH {
                     flush(
@@ -478,7 +497,8 @@ fn writer_loop(
                 }
             }
             Err(_) => {
-                // Channel closed — analysis is done.
+                // Channel closed — analysis is done. Flush any remaining
+                // parents first, then every deferred child, in batches.
                 flush(
                     db,
                     &mut batch,
@@ -487,6 +507,18 @@ fn writer_loop(
                     &mut warnings,
                     &mut touched,
                 )?;
+                while !children.is_empty() {
+                    let take = children.len().min(BATCH);
+                    let mut chunk: Vec<AnalysisMsg> = children.drain(..take).collect();
+                    flush(
+                        db,
+                        &mut chunk,
+                        reporter,
+                        &mut persisted,
+                        &mut warnings,
+                        &mut touched,
+                    )?;
+                }
                 break;
             }
         }
