@@ -236,7 +236,7 @@ function ScanRootsSection() {
           </ul>
         ) : (
           <p className="p-4 text-sm text-muted-foreground">
-            No scan roots yet. repo-radar reads git metadata and dependency
+            No scan roots yet. Repo Radar reads git metadata and dependency
             manifests locally; nothing about your code leaves the machine.
           </p>
         )}

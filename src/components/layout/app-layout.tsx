@@ -14,7 +14,7 @@ export function AppLayout() {
       <aside className="flex flex-col gap-1 border-b bg-card px-3 py-3 md:border-b-0 md:border-r md:py-5">
         <div className="mb-3 flex items-center gap-2 px-2 font-semibold">
           <Radar className="size-5 text-primary" />
-          <span>repo-radar</span>
+          <span>Repo Radar</span>
         </div>
         <nav className="flex flex-row gap-1 md:flex-col">
           {NAV_ITEMS.map(({ to, label, icon: Icon, end }) => (

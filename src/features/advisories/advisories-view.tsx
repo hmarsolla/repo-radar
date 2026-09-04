@@ -162,7 +162,7 @@ function LiveQuery() {
       <h2 className="text-sm font-semibold">Check a single package live</h2>
       <p className="mt-1 text-xs text-muted-foreground">
         This sends the package name and version to <b>api.osv.dev</b> — the one
-        exception to repo-radar's "nothing about your code leaves the machine"
+        exception to Repo Radar's "nothing about your code leaves the machine"
         rule. Use it to spot-check a package without a full sync.
       </p>
       <div className="mt-3 flex flex-wrap items-center gap-2">

@@ -33,9 +33,9 @@ export function Onboarding() {
       <div className="rounded-full bg-secondary p-4">
         <Radar className="size-8 text-primary" />
       </div>
-      <h2 className="text-xl font-semibold">Point repo-radar at your code</h2>
+      <h2 className="text-xl font-semibold">Point Repo Radar at your code</h2>
       <p className="text-sm text-muted-foreground">
-        Choose a folder that holds your git repositories. repo-radar inventories
+        Choose a folder that holds your git repositories. Repo Radar inventories
         them, reads their git history, and checks their dependencies against the
         OSV advisory database.
       </p>

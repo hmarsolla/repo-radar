@@ -74,7 +74,7 @@ jobs:
           # On a tag push: create/append to a draft release for that tag.
           # On workflow_dispatch: empty → no release, just build.
           tagName: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || '' }}
-          releaseName: repo-radar ${{ github.ref_name }}
+          releaseName: Repo Radar ${{ github.ref_name }}
           releaseBody: |
             Download the installer for your platform below.
 

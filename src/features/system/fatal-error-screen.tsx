@@ -36,7 +36,7 @@ export function FatalErrorScreen({
       <div className="w-full max-w-lg rounded-xl border border-compromise/40 bg-card p-6">
         <div className="flex items-center gap-2 text-compromise">
           <AlertOctagon className="size-5" />
-          <h1 className="text-lg font-semibold">repo-radar can’t start</h1>
+          <h1 className="text-lg font-semibold">Repo Radar can’t start</h1>
         </div>
 
         <p className="mt-3 text-sm text-muted-foreground">
@@ -48,13 +48,13 @@ export function FatalErrorScreen({
 
         {schemaTooNew ? (
           <p className="mt-3 rounded-md border border-warn/40 bg-warn/5 p-2 text-xs text-warn">
-            This database was written by a newer version of repo-radar.
+            This database was written by a newer version of Repo Radar.
             Resetting would discard that data. Install the newer version, or
             open the data folder to back up <code>repo-radar.db</code> first.
           </p>
         ) : (
           <p className="mt-3 text-sm text-muted-foreground">
-            Everything repo-radar stores is rebuilt by re-scanning your
+            Everything Repo Radar stores is rebuilt by re-scanning your
             repositories and re-syncing advisories, so resetting the database
             loses no original data.
           </p>
@@ -62,7 +62,7 @@ export function FatalErrorScreen({
 
         {done === "reset" ? (
           <p className="mt-4 rounded-md border border-ok/40 bg-ok/5 p-3 text-sm text-ok">
-            Database cleared. Restart repo-radar to continue.
+            Database cleared. Restart Repo Radar to continue.
           </p>
         ) : (
           <div className="mt-5 flex flex-wrap items-center gap-2">
@@ -117,7 +117,7 @@ export function FatalErrorScreen({
 
         {reset.isError ? (
           <p className="mt-2 text-xs text-compromise">
-            Reset failed. Close repo-radar and delete{" "}
+            Reset failed. Close Repo Radar and delete{" "}
             <code>repo-radar.db</code> from the data folder by hand.
           </p>
         ) : null}
