@@ -30,7 +30,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: "src-tauri -> target"
+          workspaces: ". -> target"
 
       - uses: actions/setup-node@v4
         with:
@@ -77,7 +77,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: "src-tauri -> target"
+          workspaces: ". -> target"
 
       - uses: actions/setup-node@v4
         with:

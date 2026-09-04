@@ -1,0 +1,96 @@
+name: Release
+
+# Build the app on every platform and attach the installers to a GitHub
+# Release. Triggered by pushing a version tag (e.g. `v0.1.0`); the tag should
+# match the `version` in `src-tauri/tauri.conf.json` / `package.json`.
+#
+# `workflow_dispatch` runs the same build on demand but skips the Release and
+# uploads the bundles as workflow artifacts instead — useful for smoke-testing
+# the pipeline without cutting a real release.
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  release:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # One universal (arm64 + x86_64) macOS build → a single .dmg.
+          - os: macos-latest
+            rust-targets: aarch64-apple-darwin,x86_64-apple-darwin
+            args: --target universal-apple-darwin
+          # 22.04 for the widest glibc / AppImage compatibility.
+          - os: ubuntu-22.04
+            rust-targets: ""
+            args: ""
+          - os: windows-latest
+            rust-targets: ""
+            args: ""
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux system dependencies
+        if: matrix.os == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libsoup-3.0-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust-targets }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - run: npm ci
+
+      - name: Build the app and publish the release
+        uses: tauri-apps/tauri-action@v0
+        id: tauri
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          # On a tag push: create/append to a draft release for that tag.
+          # On workflow_dispatch: empty → no release, just build.
+          tagName: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || '' }}
+          releaseName: repo-radar ${{ github.ref_name }}
+          releaseBody: |
+            Download the installer for your platform below.
+
+            These builds are **unsigned** — see the "Installing" section of the
+            README for the one-time OS security-warning steps (SmartScreen /
+            Gatekeeper).
+          releaseDraft: true
+          prerelease: false
+          args: ${{ matrix.args }}
+
+      - name: Upload bundles as workflow artifacts (dispatch runs only)
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: repo-radar-${{ matrix.os }}
+          path: |
+            target/release/bundle/**
+            target/universal-apple-darwin/release/bundle/**
+          if-no-files-found: error

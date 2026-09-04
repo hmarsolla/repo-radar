@@ -117,7 +117,7 @@ Other useful scripts:
 | `npm run lint` / `npm run typecheck` | ESLint / `tsc --noEmit` |
 | `cargo test --workspace` | Rust unit + integration tests |
 | `cargo clippy --workspace --all-targets -- -D warnings` | Lints |
-| `npm run tauri build` | Production bundle (installers land in `src-tauri/target/release/bundle/`) |
+| `npm run tauri build` | Production bundle (installers land in `target/release/bundle/`) |
 
 `src/bindings.ts` is generated and committed; CI fails if it drifts from the
 Rust types.

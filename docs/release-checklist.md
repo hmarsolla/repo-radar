@@ -57,7 +57,13 @@ unless a specific measurement demands it.
 
 `tauri.conf.json` already sets `bundle.targets: "all"`, so `npm run tauri
 build` produces every installer the host platform can make. Bundles land in
-`src-tauri/target/release/bundle/`.
+`target/release/bundle/` (workspace target dir; `target/<triple>/release/bundle/`
+when `--target` is passed).
+
+The `.github/workflows/release.yml` workflow runs this build on macOS, Ubuntu
+22.04, and Windows for every `v*` tag and attaches the installers to a draft
+GitHub Release. The manual checks below still need to be done on clean
+machines before publishing that draft.
 
 ### Build
 
