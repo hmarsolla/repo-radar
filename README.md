@@ -29,6 +29,17 @@ Git access is entirely in-process (libgit2) — repo-radar never shells out to
 `git`, `npm`, or `cargo`, so pointing it at a repository you did not write is
 not an execution risk.
 
+Because of that, repo-radar **disables libgit2's repository-ownership check**
+(git's `detected dubious ownership` / `safe.directory` error). That check exists
+to stop `git` executing config, hooks, and filters from a repository you do not
+own; repo-radar runs none of those. Leaving it on meant silently skipping every
+repository whose directory owner is not your user — routinely a whole secondary
+drive on Windows, plus WSL paths and network shares — so those repos just went
+missing from the inventory. Read-only inspection of a repo you do not own is not
+an execution risk, so the check is turned off rather than requiring you to edit
+your global git config to inventory your own disk. See
+`crates/core/src/scan/libgit2.rs`.
+
 ## Installing
 
 Download the installer for your platform from the releases page and run it:
@@ -58,10 +69,44 @@ right-click → *Open*). To build your own, see [Development](#development).
 5. After the sync, every repo has a health score with a fully itemized
    breakdown on its **Health** tab. Confirmed compromises are always ranked
    Critical and shown separately from vulnerabilities.
+6. Open **Cleanup** to see what each repository costs on disk, how much of that
+   is regenerable build output, and which repositories hold work that exists
+   nowhere else.
 
 Everything repo-radar stores is derived — the database lives in your OS data
 directory and can be rebuilt at any time from **Settings → Reset database**
 followed by a re-scan. Nothing is ever written inside a scanned repository.
+
+## Cleanup
+
+The **Cleanup** screen answers "which of these can I clear out?" — which is two
+questions, and answering only the first is how people lose work:
+
+- **How much is regenerable?** Every repository is measured on each scan,
+  including the directories the rest of the scan prunes. `node_modules`,
+  `target`, `.venv`, `.next`, `.gradle`, `Pods`, `.terraform` and friends are
+  reported per directory with their size and file count, because a build tool
+  recreates them on demand. `vendor/` is deliberately **not** counted as
+  regenerable — it is frequently committed.
+- **Would deleting this lose work?** Uncommitted changes, untracked files,
+  unpushed commits, a stash, or no remote at all are each flagged. The **Safe to
+  clear** total counts only repositories with none of those flags, so the headline
+  number is one you can act on without thinking about it.
+
+Repositories are also banded by how long since their last commit — active,
+dormant (90 days), stale (1 year), abandoned (2 years) — so archive candidates
+are easy to find, separately from the risk flags. A repository is often both
+abandoned *and* holding unpushed commits; those are never conflated.
+
+**Repo Radar never deletes anything.** The screen opens a folder in your own file
+manager and leaves the deletion to you. Recursive deletion inside your
+repositories is the one operation that could destroy data repo-radar did not
+derive, so it is not something the app does on your behalf.
+
+Measuring walks into directories the rest of the scan skips, so it is the most
+IO-heavy part of a scan. It is capped per repository (250k entries) and honours
+**Cancel scan**; when a cap is hit the figures are shown as lower bounds rather
+than quietly under-reported.
 
 ## Configuring and extending
 

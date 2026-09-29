@@ -12,6 +12,24 @@ use rusqlite::Connection;
 
 use crate::error::CoreResult;
 
+/// Checkpoint the WAL into the main database and truncate the `-wal` file.
+///
+/// `journal_size_limit` (see [`crate::db::pool`]) only takes effect when a
+/// checkpoint runs, and SQLite's automatic checkpoints are passive — they will
+/// not truncate. A database that has been through a full advisory sync
+/// therefore keeps a multi-hundred-megabyte `-wal` beside it indefinitely.
+/// Calling this on open reclaims that space once per launch.
+///
+/// Best-effort by design: a truncating checkpoint needs no other connection
+/// reading, so it can legitimately fail (it returns `SQLITE_BUSY`), and when
+/// it does the only cost is that the file stays large. Never surface this as
+/// an error to the user.
+pub fn checkpoint_truncate(conn: &Connection) {
+    if let Err(e) = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)") {
+        tracing::debug!(error = %e, "wal checkpoint skipped");
+    }
+}
+
 /// Clear all scan results, findings, advisories, and caches, keeping only
 /// the configured scan roots and the schema version. Runs in one
 /// transaction; `VACUUM` afterwards reclaims the file space.

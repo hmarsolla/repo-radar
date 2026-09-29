@@ -24,7 +24,7 @@ use crate::state::{AppState, ScanHandle};
 #[specta::specta]
 pub fn scan_start(app: AppHandle, state: State<'_, AppState>) -> CommandResult<i64> {
     {
-        let active = state.active_scan.lock().unwrap();
+        let active = state.lock_active_scan();
         if active.is_some() {
             return Err(CommandError::Internal {
                 message: "a scan is already running".into(),
@@ -61,7 +61,7 @@ pub fn scan_start(app: AppHandle, state: State<'_, AppState>) -> CommandResult<i
 
     let scan_id = pipeline::begin_scan(&core.db)?;
     let cancel = CancelToken::new();
-    *state.active_scan.lock().unwrap() = Some(ScanHandle {
+    *state.lock_active_scan() = Some(ScanHandle {
         scan_id,
         cancel: cancel.clone(),
     });
@@ -70,6 +70,16 @@ pub fn scan_start(app: AppHandle, state: State<'_, AppState>) -> CommandResult<i
     std::thread::Builder::new()
         .name(format!("repo-radar-scan-{scan_id}"))
         .spawn(move || {
+            // Release the slot however this thread ends, panic included. It
+            // used to be freed by a statement at the end of the body, so a
+            // panic anywhere above left `active_scan` occupied forever and
+            // every later scan was refused with "a scan is already running"
+            // until the app was restarted.
+            let _slot = ScanSlotGuard {
+                app: thread_app.clone(),
+                scan_id,
+            };
+
             let reporter = EventReporter::new(thread_app.clone(), scan_id);
             let mut ctx = ScanContext::new(&core.db, &core.rules);
             for dir in extra_prune {
@@ -78,19 +88,39 @@ pub fn scan_start(app: AppHandle, state: State<'_, AppState>) -> CommandResult<i
                     ctx.discovery.prune_dirs.push(dir);
                 }
             }
-            if let Err(e) = pipeline::run_scan(&ctx, scan_id, &roots, &cancel, &reporter) {
-                tracing::error!(scan_id, error = %e, "scan failed");
-                let _ = ScanError {
-                    message: e.to_string(),
+
+            // `run_scan` owns finalising the row on every path it returns
+            // from; this boundary exists for the paths it *doesn't* return
+            // from. Without it a panic left the `scans` row at `running`
+            // forever, so the UI kept showing a scan in flight and
+            // `latest_scan_summary` never reported a result.
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                pipeline::run_scan(&ctx, scan_id, &roots, &cancel, &reporter)
+            }));
+
+            let failure: Option<String> = match outcome {
+                Ok(Ok(_)) => None,
+                Ok(Err(e)) => {
+                    tracing::error!(scan_id, error = %e, "scan failed");
+                    Some(e.to_string())
                 }
-                .emit(&thread_app);
-            }
-            // Release the slot for the next scan.
-            if let Some(state) = thread_app.try_state::<AppState>() {
-                let mut active = state.active_scan.lock().unwrap();
-                if active.as_ref().is_some_and(|h| h.scan_id == scan_id) {
-                    *active = None;
+                Err(_) => {
+                    // The panic hook (see `crate::logging`) has already logged
+                    // the payload and its backtrace.
+                    tracing::error!(scan_id, "scan thread panicked");
+                    Some("the scan stopped unexpectedly; see the log for details".to_string())
                 }
+            };
+
+            if let Some(message) = failure {
+                // Mark the row terminal so the UI stops waiting on it.
+                if let Err(e) = core
+                    .db
+                    .write(|c| scans::finish(c, scan_id, scans::ScanStatus::Failed, 0, &[]))
+                {
+                    tracing::error!(scan_id, error = %e, "could not mark the scan failed");
+                }
+                let _ = ScanError { message }.emit(&thread_app);
             }
         })
         .map_err(|e| CommandError::Internal {
@@ -100,13 +130,32 @@ pub fn scan_start(app: AppHandle, state: State<'_, AppState>) -> CommandResult<i
     Ok(scan_id)
 }
 
+/// Frees the single scan slot when the scan thread ends, on every path
+/// including an unwind.
+struct ScanSlotGuard {
+    app: AppHandle,
+    scan_id: i64,
+}
+
+impl Drop for ScanSlotGuard {
+    fn drop(&mut self) {
+        if let Some(state) = self.app.try_state::<AppState>() {
+            let mut active = state.lock_active_scan();
+            // Only clear our own scan, never a newer one.
+            if active.as_ref().is_some_and(|h| h.scan_id == self.scan_id) {
+                *active = None;
+            }
+        }
+    }
+}
+
 /// Signal the running scan to stop. Already-persisted repos remain; the scan
 /// row ends up `cancelled` (FR-1.9). A no-op if `scan_id` is not the scan in
 /// flight.
 #[tauri::command]
 #[specta::specta]
 pub fn scan_cancel(state: State<'_, AppState>, scan_id: i64) -> CommandResult<()> {
-    if let Some(handle) = state.active_scan.lock().unwrap().as_ref() {
+    if let Some(handle) = state.lock_active_scan().as_ref() {
         if handle.scan_id == scan_id {
             handle.cancel.cancel();
             tracing::info!(scan_id, "scan cancellation requested");

@@ -407,6 +407,51 @@ pub fn touch_scanned(conn: &Connection, repo_id: i64) -> CoreResult<()> {
     Ok(())
 }
 
+/// Store a repository's disk measurement, replacing any previous one.
+///
+/// Written on every scan regardless of the incremental fingerprint: disk usage
+/// changes without any file the fingerprint covers changing (`npm install`,
+/// `cargo build`, or the user deleting `node_modules`), so caching it against
+/// the fingerprint would show numbers that are confidently wrong.
+pub fn replace_disk_usage(
+    conn: &Connection,
+    repo_id: i64,
+    usage: &crate::scan::disk::DiskUsage,
+) -> CoreResult<()> {
+    conn.execute(
+        "UPDATE repos
+            SET disk_total_bytes = ?2, disk_git_bytes = ?3,
+                disk_reclaimable_bytes = ?4, disk_file_count = ?5,
+                disk_truncated = ?6, disk_measured_at = ?7
+          WHERE id = ?1",
+        rusqlite::params![
+            repo_id,
+            usage.total_bytes as i64,
+            usage.git_bytes as i64,
+            usage.reclaimable_bytes() as i64,
+            usage.file_count as i64,
+            usage.truncated as i64,
+            chrono::Utc::now().to_rfc3339(),
+        ],
+    )?;
+
+    conn.execute("DELETE FROM repo_disk_dirs WHERE repo_id = ?1", [repo_id])?;
+    let mut stmt = conn.prepare_cached(
+        "INSERT INTO repo_disk_dirs (repo_id, rel_path, kind, bytes, file_count)
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+    )?;
+    for d in &usage.reclaimable {
+        stmt.execute(rusqlite::params![
+            repo_id,
+            d.rel_path,
+            d.kind,
+            d.bytes as i64,
+            d.file_count as i64,
+        ])?;
+    }
+    Ok(())
+}
+
 /// Replace a repo's language rows wholesale.
 pub fn replace_languages(
     conn: &Connection,

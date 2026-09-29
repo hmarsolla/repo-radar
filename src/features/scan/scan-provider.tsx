@@ -93,6 +93,9 @@ export function ScanProvider({ children }: { children: React.ReactNode }) {
         qc.invalidateQueries({ queryKey: ["repos"] });
         qc.invalidateQueries({ queryKey: ["dashboard"] });
         qc.invalidateQueries({ queryKey: ["latestScan"] });
+        // Disk figures and triage are rewritten by every scan.
+        qc.invalidateQueries({ queryKey: ["cleanup"] });
+        qc.invalidateQueries({ queryKey: ["cleanupSummary"] });
       }),
     );
     track(() =>

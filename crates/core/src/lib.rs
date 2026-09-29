@@ -49,6 +49,8 @@ impl CoreContext {
     /// Build a context: open (or create) the database at `paths.data_dir`,
     /// run migrations, and load the rule packs.
     pub fn new(paths: Paths) -> CoreResult<Arc<Self>> {
+        // Must happen before any libgit2 call in the process.
+        crate::scan::libgit2::init();
         paths.ensure_dirs()?;
         let db = Db::open(&paths.database_file())?;
         let rules = RulePacks::load(&paths)?;

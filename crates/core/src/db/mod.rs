@@ -6,6 +6,7 @@
 //! [`pool::PooledConn`] and never reach for global state.
 
 pub mod advisories;
+pub mod cleanup;
 pub mod dashboard;
 pub mod findings;
 pub mod maintenance;
@@ -31,6 +32,12 @@ impl Db {
         let pools = Pools::open_file(path)?;
         let db = Self { pools };
         db.pools.with_write(migrations::run)?;
+        // Reclaim the `-wal` file left oversized by a previous session's
+        // advisory sync (see `maintenance::checkpoint_truncate`).
+        db.pools.with_write(|c| {
+            maintenance::checkpoint_truncate(c);
+            Ok(())
+        })?;
         Ok(db)
     }
 

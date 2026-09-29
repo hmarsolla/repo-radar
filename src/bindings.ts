@@ -35,6 +35,21 @@ export const commands = {
 	 */
 	openDataFolder: () => typedError<null, CommandError>(__TAURI_INVOKE("open_data_folder")),
 	/**
+	 *  Record a frontend failure in the application log.
+	 * 
+	 *  A crash in the webview — an uncaught render error, a rejected promise
+	 *  nobody handled — leaves no trace in `logs/repo-radar.log`, because that log
+	 *  is written by the Rust side. Its symptom is a blank or broken window, which
+	 *  users reasonably report as "the app crashed", with nothing in the one file
+	 *  they can actually send. The error boundary and the global `error` /
+	 *  `unhandledrejection` handlers call this so frontend and backend failures
+	 *  land in the same place, in order.
+	 * 
+	 *  Infallible on purpose: this is called *from* a failure path, so it must
+	 *  never introduce a second one.
+	 */
+	reportFrontendError: (context: string, message: string, stack: string | null) => __TAURI_INVOKE<void>("report_frontend_error", { context, message, stack }),
+	/**
 	 *  Read settings from the store, falling back to defaults when the value is
 	 *  missing or unparseable.
 	 */
@@ -127,6 +142,29 @@ export const commands = {
 	warnings: Warning[],
 } | null, CommandError>(__TAURI_INVOKE("latest_scan_summary")),
 	/**
+	 *  Per-repository cleanup triage: footprint, regenerable directories, and the
+	 *  reasons deleting the repository would lose work.
+	 */
+	cleanupList: (filter: CleanupFilter) => typedError<CleanupRow[], CommandError>(__TAURI_INVOKE("cleanup_list", { filter })),
+	/**
+	 *  Totals for the Cleanup view's summary tiles, over every repository
+	 *  regardless of the active filter.
+	 */
+	cleanupSummary: () => typedError<CleanupSummary, CommandError>(__TAURI_INVOKE("cleanup_summary")),
+	/**
+	 *  Show a path in the OS file manager.
+	 * 
+	 *  This is how the Cleanup view hands off: the user sees exactly which
+	 *  directory is worth deleting and then deletes it with the tool they already
+	 *  trust for that, rather than repo-radar recursively removing directories on
+	 *  their behalf.
+	 * 
+	 *  The path is validated against the database before being opened, so only
+	 *  directories repo-radar actually measured can be revealed — a path from
+	 *  anywhere else is refused rather than passed to the shell.
+	 */
+	revealPath: (repoId: number, relPath: string | null) => typedError<null, CommandError>(__TAURI_INVOKE("reveal_path", { repoId, relPath })),
+	/**
 	 *  Start an advisory sync in the background. Returns immediately; progress
 	 *  via `sync:progress`, finish via `sync:complete`. A manual sync and the
 	 *  scheduled sync cannot overlap (the `sync_lock`, DESIGN §12.3).
@@ -189,6 +227,17 @@ export const events = {
 };
 
 /* Types */
+/**
+ *  Activity verdict, from the last commit date alone. Kept separate from
+ *  [`CleanupRow::at_risk`] so "nobody has touched this in two years" and "this
+ *  has unpushed work" are never conflated — a repository is frequently both.
+ */
+export type Activity = 
+/**  Committed to within [`DORMANT_AFTER_DAYS`]. */
+"active" | "dormant" | "stale" | "abandoned" | 
+/**  No commit date — an unborn repository, or a bare one with no HEAD. */
+"unknown";
+
 export type AdvisoryImpact = {
 	repoId: number,
 	repoName: string,
@@ -209,6 +258,70 @@ export type BootStatus = {
 export type Bucket = {
 	label: string,
 	count: number,
+};
+
+export type CleanupFilter = {
+	sort: CleanupSort,
+	/**  Only repositories with no risk flags. */
+	safeOnly?: boolean,
+	/**  Only repositories that are stale or abandoned. */
+	staleOnly?: boolean,
+};
+
+/**  One repository as the Cleanup view shows it. */
+export type CleanupRow = {
+	repoId: number,
+	name: string,
+	path: string,
+	isBare: boolean,
+	lastCommitAt: string | null,
+	daysSinceCommit: number | null,
+	activity: Activity,
+	/**
+	 *  `null` when this repository has never been measured (scanned by a build
+	 *  before disk accounting existed). Distinct from `0`.
+	 */
+	totalBytes: number | null,
+	gitBytes: number | null,
+	reclaimableBytes: number | null,
+	/**  Figures are a lower bound — the walk hit its entry cap. */
+	truncated: boolean,
+	measuredAt: string | null,
+	/**  The regenerable directories themselves, largest first. */
+	reclaimableDirs: ReclaimableDirRow[],
+	/**
+	 *  Every reason deleting this repository would lose work. Empty means the
+	 *  working tree is clean, everything is pushed, and a remote exists.
+	 */
+	risks: Risk[],
+};
+
+/**  How to sort [`list`]. */
+export type CleanupSort = 
+/**  Most reclaimable space first — the default. */
+"reclaimable" | 
+/**  Largest total footprint first. */
+"totalSize" | 
+/**  Longest since the last commit first. */
+"oldest" | "name";
+
+/**  Totals for the Cleanup view's summary tiles. */
+export type CleanupSummary = {
+	repoCount: number,
+	/**  Repositories whose footprint has been measured at least once. */
+	measuredCount: number,
+	totalBytes: number,
+	reclaimableBytes: number,
+	/**
+	 *  Reclaimable bytes in repositories with **no** risk flags — the figure a
+	 *  user can act on without thinking about it.
+	 */
+	safeReclaimableBytes: number,
+	atRiskCount: number,
+	/**  Stale or abandoned, i.e. archive candidates. */
+	staleCount: number,
+	/**  At least one measurement was capped, so totals are lower bounds. */
+	anyTruncated: boolean,
 };
 
 export type CommandError = 
@@ -440,6 +553,13 @@ export type Pong = {
 	pid: number,
 };
 
+export type ReclaimableDirRow = {
+	relPath: string,
+	kind: string,
+	bytes: number,
+	fileCount: number,
+};
+
 /**  How many repos a template expects. */
 export type RepoArity = 
 /**  Exactly one repo (T2, T3). */
@@ -557,6 +677,25 @@ export type RepoRef = {
 
 /**  Sort key for the repo list. Sorting happens in SQL (DESIGN §12.1). */
 export type RepoSort = "name" | "last_commit" | "primary_language";
+
+export type Risk = {
+	kind: RiskKind,
+	/**  How many files / commits / stash entries, where that is meaningful. */
+	count: number | null,
+};
+
+/**  A single reason work in this repository exists nowhere else. */
+export type RiskKind = 
+/**  Modified or staged tracked files. */
+"uncommitted_changes" | 
+/**  Untracked files that are not ignored. */
+"untracked_files" | 
+/**  Commits on the local branch that the remote does not have. */
+"unpushed_commits" | 
+/**  At least one stash entry — invisible in every other view. */
+"stash" | 
+/**  No remote configured, so the only copy is this directory. */
+"no_remote";
 
 /**  `scan:complete`. */
 export type ScanComplete = {
