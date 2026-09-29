@@ -63,6 +63,10 @@ pub struct Discovery {
 /// Walk `root` and return every repository found under it. Deterministic
 /// order (sorted by path) so callers and tests see a stable list.
 pub fn discover(root: &Path, config: &DiscoveryConfig, cancel: &CancelToken) -> Discovery {
+    // Defensive: `CoreContext::new` already did this at startup, but core
+    // tests, examples, and headless embedders can reach discovery first.
+    crate::scan::libgit2::init();
+
     let found: Mutex<Vec<RepoIdentity>> = Mutex::new(Vec::new());
     let warnings: Mutex<Vec<Warning>> = Mutex::new(Vec::new());
 
@@ -130,8 +134,11 @@ pub fn discover(root: &Path, config: &DiscoveryConfig, cancel: &CancelToken) -> 
                     WalkState::Skip
                 }
                 RepoProbe::Broken(msg) => {
+                    // Scope this to the repository, not the whole scan, so the
+                    // UI can show *which* directory was skipped instead of a
+                    // scan-level note the user cannot act on.
                     warnings.lock().unwrap().push(Warning::new(
-                        WarningScope::Scan,
+                        WarningScope::Repo(normalize(path)),
                         WarningKind::GitError,
                         msg,
                     ));
@@ -179,10 +186,29 @@ fn probe_repo(dir: &Path) -> RepoProbe {
     match open {
         Ok(repo) => RepoProbe::Repo(identity_from_repo(dir, &repo)),
         Err(e) => RepoProbe::Broken(format!(
-            "{} looks like a repository but could not be opened: {}",
-            dir.display(),
-            e.message()
+            "{} looks like a repository but could not be opened: {}{}",
+            // `normalize` rather than `display` — the message used to mix
+            // separators (`F:/repos\name`) because the walk joins an
+            // already-normalised root with an OS-native component.
+            normalize(dir),
+            e.message(),
+            ownership_hint(&e),
         )),
+    }
+}
+
+/// Extra guidance for libgit2's ownership refusal.
+///
+/// [`crate::scan::libgit2::init`] disables that check, so reaching this should
+/// now be rare — but if the global option could not be applied, the raw
+/// message ("not owned by current user") gives no clue what to do, and the
+/// symptom is repositories missing from the inventory.
+fn ownership_hint(e: &git2::Error) -> &'static str {
+    if e.message().contains("not owned by current user") {
+        " — repo-radar could not disable libgit2's ownership check; \
+         adding the path to git's `safe.directory` will also fix it"
+    } else {
+        ""
     }
 }
 

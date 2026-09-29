@@ -106,6 +106,11 @@ fn cheap_head_sha(path: &Path) -> Option<String> {
     Some(sha)
 }
 
+/// Depth of the analyze→persist queue. Several times the writer's batch size
+/// so the writer always has a full batch ready, small enough that the
+/// in-flight backlog stays a constant rather than growing with repo count.
+const ANALYSIS_QUEUE_BOUND: usize = 64;
+
 /// One scan root as the pipeline needs it.
 #[derive(Debug, Clone)]
 pub struct ScanRoot {
@@ -192,7 +197,19 @@ pub fn run_scan(
     let rule_pack_version = ctx.rule_pack_version().to_string();
 
     // ---- Stages 2 + 3: analyze (parallel) → persist (single writer) -------
-    let (tx, rx) = mpsc::channel::<AnalysisMsg>();
+    //
+    // A *bounded* channel is load-bearing, not a detail. Analysis is
+    // CPU-parallel across every core; persistence is one serialized SQLite
+    // writer, so on any sizeable tree analysis outruns the writer
+    // permanently. With the unbounded channel this used to be, the backlog
+    // grew without limit and each queued `RepoAnalysis` holds that repo's
+    // whole dependency set and language breakdown — a few thousand
+    // dependency-heavy repos is enough to exhaust memory and have the OS kill
+    // the process, with nothing in the log to say why. `sync_channel` makes a
+    // full queue block the producing rayon worker instead, which costs
+    // nothing (that worker has no useful work the writer isn't already
+    // behind on) and caps the backlog at a constant.
+    let (tx, rx) = mpsc::sync_channel::<AnalysisMsg>(ANALYSIS_QUEUE_BOUND);
     let mut persisted = 0usize;
     let mut stage4_targets: Vec<(i64, String)> = Vec::new();
 
@@ -203,42 +220,89 @@ pub fn run_scan(
             if cancel.is_cancelled() {
                 return;
             }
-            let path = Path::new(&item.identity.path);
 
-            // Incremental skip (M1-12): recompute the fingerprint from cheap
-            // inputs and compare. Manifest hashes join the formula with the
-            // parts: HEAD sha + every manifest file's content hash + the
-            // rule-pack version (§6.5).
-            let head_sha = if item.identity.is_bare {
-                None
-            } else {
-                cheap_head_sha(path)
+            // The whole per-repo body runs under one panic boundary. The
+            // fingerprint probe is *not* safe to leave outside it:
+            // `manifest_hashes` reads and parses the repo's own lockfiles, so
+            // it is exactly as panic-prone as full analysis. A panic escaping
+            // this closure aborted the rayon iteration and dropped the
+            // repository with no message and no warning.
+            let (fingerprint, disk, outcome) = match catch_unwind(AssertUnwindSafe(|| {
+                let path = Path::new(&item.identity.path);
+
+                // Disk accounting runs for every repository on every scan,
+                // *before* the fingerprint branch below decides whether to
+                // re-analyse: `npm install` and `cargo build` change a repo's
+                // footprint without touching anything the fingerprint covers.
+                //
+                // Submodule children are skipped: they live inside the parent's
+                // working tree, so the parent's walk has already counted those
+                // bytes and measuring the child again would double-count them
+                // in every total the Cleanup view adds up.
+                let disk = if item.identity.parent_path.is_some() {
+                    crate::scan::disk::DiskUsage::default()
+                } else {
+                    crate::scan::disk::measure(path, cancel)
+                };
+
+                // Incremental skip (M1-12): recompute the fingerprint from
+                // cheap inputs and compare. Manifest hashes join the formula
+                // with the parts: HEAD sha + every manifest file's content
+                // hash + the rule-pack version (§6.5).
+                let head_sha = if item.identity.is_bare {
+                    None
+                } else {
+                    cheap_head_sha(path)
+                };
+                let manifest_hashes = if item.identity.is_bare {
+                    Vec::new()
+                } else {
+                    crate::scan::manifests::manifest_hashes(path, &ctx.parsers, &ctx.discovery)
+                };
+                let fingerprint =
+                    compute_fingerprint(head_sha.as_deref(), &manifest_hashes, &rule_pack_version);
+
+                let already = prior
+                    .get(&item.identity.path)
+                    .map(|stored| stored.as_deref() == Some(fingerprint.as_str()))
+                    .unwrap_or(false);
+
+                let outcome = if already {
+                    Outcome::Unchanged
+                } else {
+                    Outcome::Analyzed(Box::new(analyze_repo(ctx, &item.identity, cancel)))
+                };
+                (fingerprint, disk, outcome)
+            })) {
+                Ok(triple) => triple,
+                // An empty fingerprint never matches a stored one, so the
+                // repository is retried in full on the next scan rather than
+                // being cached as "unchanged" in its broken state.
+                Err(_) => (
+                    String::new(),
+                    crate::scan::disk::DiskUsage::default(),
+                    Outcome::Analyzed(Box::new(panicked_analysis(&item.identity))),
+                ),
             };
-            let manifest_hashes = if item.identity.is_bare {
-                Vec::new()
-            } else {
-                crate::scan::manifests::manifest_hashes(path, &ctx.parsers, &ctx.discovery)
-            };
-            let fingerprint =
-                compute_fingerprint(head_sha.as_deref(), &manifest_hashes, &rule_pack_version);
 
-            let already = prior
-                .get(&item.identity.path)
-                .map(|stored| stored.as_deref() == Some(fingerprint.as_str()))
-                .unwrap_or(false);
-
-            let outcome = if already {
-                Outcome::Unchanged
-            } else {
-                Outcome::Analyzed(Box::new(analyze_repo(ctx, &item.identity, cancel)))
-            };
-
-            let _ = tx.send(AnalysisMsg {
-                root_id: item.root_id,
-                identity: item.identity.clone(),
-                fingerprint,
-                outcome,
-            });
+            if tx
+                .send(AnalysisMsg {
+                    root_id: item.root_id,
+                    identity: item.identity.clone(),
+                    fingerprint,
+                    disk,
+                    outcome,
+                })
+                .is_err()
+            {
+                // The writer thread is gone (it returned an error or
+                // panicked). Nothing left to do but stop quietly; the writer's
+                // own failure is what gets reported.
+                tracing::debug!(
+                    path = %item.identity.path,
+                    "scan writer channel closed; dropping analysis"
+                );
+            }
         });
         drop(tx); // close the channel so the writer loop ends
 
@@ -309,6 +373,10 @@ struct AnalysisMsg {
     root_id: i64,
     identity: RepoIdentity,
     fingerprint: String,
+    /// Measured on every scan, independent of [`Outcome`] — see
+    /// [`crate::db::repos::replace_disk_usage`] for why it is not cached
+    /// against the fingerprint.
+    disk: crate::scan::disk::DiskUsage,
     outcome: Outcome,
 }
 
@@ -360,21 +428,28 @@ fn analyze_repo(
 pub fn guard_analysis(identity: &RepoIdentity, f: impl FnOnce() -> RepoAnalysis) -> RepoAnalysis {
     match catch_unwind(AssertUnwindSafe(f)) {
         Ok(analysis) => analysis,
-        Err(_) => RepoAnalysis {
-            repo: identity.clone(),
-            git: None,
-            languages: Vec::new(),
-            dependencies: Vec::new(),
-            manifests: Vec::new(),
-            technologies: Vec::new(),
-            classification: unknown_classification(),
-            is_monorepo: false,
-            warnings: vec![Warning::new(
-                WarningScope::Repo(identity.path.clone()),
-                WarningKind::Panic,
-                "analysis panicked; repository skipped",
-            )],
-        },
+        Err(_) => panicked_analysis(identity),
+    }
+}
+
+/// An otherwise-empty [`RepoAnalysis`] carrying a single `Panic` warning, so
+/// a repository whose analysis blew up still reaches the writer and still
+/// appears in the list — flagged — rather than vanishing.
+fn panicked_analysis(identity: &RepoIdentity) -> RepoAnalysis {
+    RepoAnalysis {
+        repo: identity.clone(),
+        git: None,
+        languages: Vec::new(),
+        dependencies: Vec::new(),
+        manifests: Vec::new(),
+        technologies: Vec::new(),
+        classification: unknown_classification(),
+        is_monorepo: false,
+        warnings: vec![Warning::new(
+            WarningScope::Repo(identity.path.clone()),
+            WarningKind::Panic,
+            "analysis panicked; repository skipped",
+        )],
     }
 }
 
@@ -546,6 +621,9 @@ fn flush(
     // Collect the summaries to report *after* the transaction commits, so a
     // subscriber never sees a repo that isn't yet queryable.
     let mut done: Vec<RepoSummary> = Vec::with_capacity(batch.len());
+    // Paths whose row disappeared between the fingerprint load and this
+    // write (see the `Outcome::Unchanged` arm below).
+    let mut vanished: Vec<String> = Vec::new();
 
     db.write(|conn| {
         let tx = conn.transaction()?;
@@ -556,7 +634,7 @@ fn flush(
                 None => None,
             };
 
-            let (repo_id, warning_count) = match &msg.outcome {
+            let resolved = match &msg.outcome {
                 Outcome::Analyzed(analysis) => {
                     // A submodule child's dependencies are attributed to the
                     // parent's `repo_id` (FR-1.5).
@@ -579,16 +657,39 @@ fn flush(
                     )?;
                     repo_db::replace_technologies(&tx, id, &analysis.technologies)?;
                     repo_db::set_classification(&tx, id, &analysis.classification)?;
-                    (id, analysis.warnings.len())
+                    Some((id, analysis.warnings.len()))
                 }
                 Outcome::Unchanged => {
-                    // Row already exists; just record that it was seen.
-                    let id = repo_db::repo_id_by_path(&tx, &msg.identity.path)?
-                        .expect("Unchanged implies an existing row");
-                    repo_db::touch_scanned(&tx, id)?;
-                    (id, 0)
+                    // The row existed when `all_fingerprints` was loaded at
+                    // the start of the scan, but it can be gone by now:
+                    // removing a scan root cascades its repos away
+                    // (`ON DELETE CASCADE`), and **Reset database** empties
+                    // the table outright — both reachable from the UI while a
+                    // scan is in flight. This used to be
+                    // `.expect("Unchanged implies an existing row")`, which
+                    // panicked *inside* `db.write`, poisoning the write mutex
+                    // and taking every later write in the process down with
+                    // it. Skip the row instead and report it.
+                    match repo_db::repo_id_by_path(&tx, &msg.identity.path)? {
+                        Some(id) => {
+                            repo_db::touch_scanned(&tx, id)?;
+                            Some((id, 0))
+                        }
+                        None => {
+                            vanished.push(msg.identity.path.clone());
+                            None
+                        }
+                    }
                 }
             };
+            let Some((repo_id, warning_count)) = resolved else {
+                continue;
+            };
+
+            // Applies to both outcomes: an `Unchanged` repo still gets a fresh
+            // footprint, which is the whole reason disk usage is measured
+            // outside the fingerprint branch.
+            repo_db::replace_disk_usage(&tx, repo_id, &msg.disk)?;
 
             // Submodule children roll into their parent — persisted, but
             // never announced as a list row (FR-1.5).
@@ -605,6 +706,14 @@ fn flush(
         Ok(())
     })?;
 
+    for path in vanished {
+        warnings.push(Warning::new(
+            WarningScope::Repo(path),
+            WarningKind::Other,
+            "repository row disappeared during the scan (scan root removed, \
+             or the database was reset); skipped",
+        ));
+    }
     for msg in batch.drain(..) {
         if let Outcome::Analyzed(analysis) = msg.outcome {
             warnings.extend(analysis.warnings);

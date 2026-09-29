@@ -9,8 +9,10 @@
 //! Implemented across **M1-1 … M1-8** and **M2-18**.
 
 pub mod discovery;
+pub mod disk;
 pub mod git;
 pub mod languages;
+pub mod libgit2;
 pub mod manifests;
 pub mod pipeline;
 pub mod progress;

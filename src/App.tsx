@@ -8,18 +8,23 @@ import { router } from "@/routes";
 import { ThemeProvider } from "@/features/settings/theme-provider";
 import { ScanProvider } from "@/features/scan/scan-provider";
 import { FatalErrorScreen } from "@/features/system/fatal-error-screen";
+import { ErrorBoundary } from "@/features/system/error-boundary";
 
 export default function App() {
   return (
-    <ThemeProvider>
-      <QueryClientProvider client={queryClient}>
-        <BootGate>
-          <ScanProvider>
-            <RouterProvider router={router} />
-          </ScanProvider>
-        </BootGate>
-      </QueryClientProvider>
-    </ThemeProvider>
+    // Outermost boundary: the last line of defence against a blank window.
+    // Anything it catches has escaped the per-route boundaries in `routes`.
+    <ErrorBoundary context="app-root">
+      <ThemeProvider>
+        <QueryClientProvider client={queryClient}>
+          <BootGate>
+            <ScanProvider>
+              <RouterProvider router={router} />
+            </ScanProvider>
+          </BootGate>
+        </QueryClientProvider>
+      </ThemeProvider>
+    </ErrorBoundary>
   );
 }
 

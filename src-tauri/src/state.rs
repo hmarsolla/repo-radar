@@ -1,6 +1,6 @@
 //! Application state (DESIGN §12.3).
 
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use repo_radar_core::scan::CancelToken;
 use repo_radar_core::CoreContext;
@@ -26,6 +26,19 @@ impl AppState {
             active_scan: Mutex::new(None),
             sync_lock: Arc::new(tokio::sync::Mutex::new(())),
         }
+    }
+
+    /// Lock [`Self::active_scan`], recovering if a panic poisoned it.
+    ///
+    /// The guarded value is a plain `Option<ScanHandle>` with no invariant a
+    /// panic could leave half-built, so poison carries no information worth
+    /// propagating — whereas propagating it (`.lock().unwrap()`) meant one
+    /// panic anywhere near the scan slot made **every** later `scan_start`,
+    /// `scan_cancel`, and slot release panic for the rest of the session.
+    pub fn lock_active_scan(&self) -> MutexGuard<'_, Option<ScanHandle>> {
+        self.active_scan
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 }
 

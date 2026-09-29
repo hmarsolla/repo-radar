@@ -17,11 +17,22 @@ const READ_POOL_SIZE: u32 = 4;
 /// Pragmas applied to **every** connection, read or write (DESIGN §5.1).
 /// `synchronous = NORMAL` is a deliberate durability trade: every byte in
 /// this database is derived and re-scannable.
+/// `journal_size_limit` caps the write-ahead log at 64 MiB.
+///
+/// An advisory sync ingests a whole ecosystem inside one transaction — for npm
+/// that is ~230k advisories and >1M affected-version rows — so the WAL has to
+/// grow to hold the entire transaction before it commits. Without a size
+/// limit SQLite *resets* the WAL after checkpointing but never shrinks the
+/// file, so that peak became permanent: a 259 MiB `repo-radar.db-wal` sitting
+/// next to a 497 MiB database, for a database whose real content is a few
+/// hundred MiB. `journal_size_limit` makes the post-checkpoint truncation
+/// actually give the space back.
 const PRAGMAS: &str = "
     PRAGMA journal_mode = WAL;
     PRAGMA synchronous = NORMAL;
     PRAGMA foreign_keys = ON;
     PRAGMA busy_timeout = 5000;
+    PRAGMA journal_size_limit = 67108864;
 ";
 
 pub type ReadPool = r2d2::Pool<SqliteConnectionManager>;
@@ -88,8 +99,34 @@ impl Pools {
     }
 
     /// Run a closure with exclusive access to the write connection.
+    ///
+    /// # Poison recovery
+    ///
+    /// A panic inside a previous closure poisons this mutex. Propagating that
+    /// poison (the old `.expect(...)`) made a single panic **permanently**
+    /// fatal: every later write — every scan, every advisory sync, every
+    /// settings change — panicked for the rest of the process's life, so the
+    /// app looked like it was crashing constantly when one repository had
+    /// tripped one bug once.
+    ///
+    /// Recovering is sound here because the guarded value is a SQLite
+    /// connection, not an invariant-bearing data structure: `rusqlite`'s
+    /// `Transaction` rolls back in its `Drop`, so a panic during a
+    /// transaction unwinds to a clean connection. The only residue possible
+    /// is a transaction opened without an RAII guard, which
+    /// [`clear_stale_transaction`] closes before the connection is reused.
     pub fn with_write<T>(&self, f: impl FnOnce(&mut Connection) -> CoreResult<T>) -> CoreResult<T> {
-        let mut guard = self.write.lock().expect("write connection mutex poisoned");
+        let mut guard = match self.write.lock() {
+            Ok(g) => g,
+            Err(poisoned) => {
+                tracing::warn!(
+                    "write connection mutex was poisoned by an earlier panic; recovering"
+                );
+                let mut g = poisoned.into_inner();
+                clear_stale_transaction(&mut g);
+                g
+            }
+        };
         f(&mut guard)
     }
 
@@ -101,6 +138,22 @@ impl Pools {
     /// Clone the `Arc` to the write connection (for the scan writer thread).
     pub fn write_handle(&self) -> Arc<Mutex<Connection>> {
         Arc::clone(&self.write)
+    }
+}
+
+/// Roll back a transaction a panicking closure may have left open.
+///
+/// `rusqlite::Transaction` rolls back on drop, so this is a belt-and-braces
+/// check for a `BEGIN` issued through raw SQL with no RAII guard. Leaving one
+/// open would make the *next* write fail with "cannot start a transaction
+/// within a transaction" and hold a write lock on the database file.
+fn clear_stale_transaction(conn: &mut Connection) {
+    if conn.is_autocommit() {
+        return;
+    }
+    tracing::warn!("rolling back a transaction left open by a panicking write");
+    if let Err(e) = conn.execute_batch("ROLLBACK") {
+        tracing::error!(error = %e, "could not roll back the stale transaction");
     }
 }
 

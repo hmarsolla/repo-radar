@@ -79,6 +79,28 @@ pub fn reset_database(app: AppHandle, boot: State<'_, Boot>) -> CommandResult<()
     Ok(())
 }
 
+/// Record a frontend failure in the application log.
+///
+/// A crash in the webview — an uncaught render error, a rejected promise
+/// nobody handled — leaves no trace in `logs/repo-radar.log`, because that log
+/// is written by the Rust side. Its symptom is a blank or broken window, which
+/// users reasonably report as "the app crashed", with nothing in the one file
+/// they can actually send. The error boundary and the global `error` /
+/// `unhandledrejection` handlers call this so frontend and backend failures
+/// land in the same place, in order.
+///
+/// Infallible on purpose: this is called *from* a failure path, so it must
+/// never introduce a second one.
+#[tauri::command]
+#[specta::specta]
+pub fn report_frontend_error(context: String, message: String, stack: Option<String>) {
+    tracing::error!(
+        context = %context,
+        stack = stack.as_deref().unwrap_or("<none>"),
+        "frontend error: {message}"
+    );
+}
+
 /// **Open data folder** (FR-10.3) — reveal the OS data directory (which
 /// holds `repo-radar.db` and `logs/`) in the system file manager. Works in
 /// recovery mode too.
